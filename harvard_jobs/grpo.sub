@@ -76,7 +76,7 @@ for klloss in "${kl_loss_coef[@]}"; do
                             trainer.nnodes=1 \
                             trainer.save_freq=-1 \
                             trainer.test_freq=50 \
-                            trainer.project_name=countdown \
+                            trainer.project_name=${DATASET} \
                             trainer.experiment_name=qwen2.5-${MODEL_SIZE}b-grpo-n-${nr}-bs-${bs}-lr-${lr}-klloss-${klloss} \
                             trainer.total_epochs=${EPOCH} # 2>&1 | tee verl_demo.log
             done

@@ -46,13 +46,13 @@ def compute_score(solution_str, ground_truth, method='strict', format_score=0.1,
     if answer is None:
         if do_print:
             print(f"No answer found")
-        return 0
+        return 0, 0
     else:
         if int(answer) == int(ground_truth):
             if do_print:
                 print(f"Correct answer: {answer}")
-            return score
+            return format_score, score - format_score
         else:
             if do_print:
                 print(f"Incorrect answer {answer} | Ground truth: {ground_truth}")
-            return format_score
+            return format_score, 0

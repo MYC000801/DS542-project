@@ -172,6 +172,8 @@ def _compute_response_info(batch):
 def compute_data_metrics(batch, use_critic=True):
     # TODO: add response length
     sequence_score = batch.batch['token_level_scores'].sum(-1)
+    sequence_format_score = batch.batch['token_level_format_scores'].sum(-1)
+    sequence_correctness_score = batch.batch['token_level_correctness_scores'].sum(-1)
     sequence_reward = batch.batch['token_level_rewards'].sum(-1)
 
     advantages = batch.batch['advantages']
@@ -205,6 +207,20 @@ def compute_data_metrics(batch, use_critic=True):
             torch.max(sequence_score).detach().item(),
         'critic/score/min':
             torch.min(sequence_score).detach().item(),
+        # format score
+        'critic/format_score/mean':
+            torch.mean(sequence_format_score).detach().item(),
+        'critic/format_score/max':
+            torch.max(sequence_format_score).detach().item(),
+        'critic/format_score/min':
+            torch.min(sequence_format_score).detach().item(),
+        # correctness_score
+        'critic/correctness_score/mean':
+            torch.mean(sequence_correctness_score).detach().item(),
+        'critic/correctness_score/max':
+            torch.max(sequence_correctness_score).detach().item(),
+        'critic/correctness_score/min':
+            torch.min(sequence_correctness_score).detach().item(),
         # reward
         'critic/rewards/mean':
             torch.mean(sequence_reward).detach().item(),
@@ -390,7 +406,7 @@ class RayPPOTrainer(object):
             self.config.critic.optim.total_training_steps = total_training_steps
 
     def _validate(self):
-        reward_tensor_lst = []
+        format_score_tensor_lst, correctness_score_tensor_lst = [], []
         data_source_lst = []
         recorded_sequence_reward_lst = []
         for test_data in self.val_dataloader:
@@ -421,13 +437,15 @@ class RayPPOTrainer(object):
 
             # evaluate using reward_function
             # for certain reward function (e.g. sandbox), the generation can overlap with reward
-            reward_tensor, recorded_sequence_reward = self.val_reward_fn(test_batch)
+            format_score_tensor, correctness_score_tensor, recorded_sequence_reward = self.val_reward_fn(test_batch)
 
-            reward_tensor_lst.append(reward_tensor)
-            data_source_lst.append(test_batch.non_tensor_batch.get('data_source', ['unknown'] * reward_tensor.shape[0]))
+            format_score_tensor_lst.append(format_score_tensor)
+            correctness_score_tensor_lst.append(correctness_score_tensor)
+            data_source_lst.append(test_batch.non_tensor_batch.get('data_source', ['unknown'] * format_score_tensor.shape[0]))
             recorded_sequence_reward_lst.append(recorded_sequence_reward)
 
-        reward_tensor = torch.cat(reward_tensor_lst, dim=0).sum(-1).cpu()  # (batch_size,)
+        format_score_tensor = torch.cat(format_score_tensor_lst, dim=0).sum(-1).cpu()  # (batch_size,)
+        correctness_score_tensor = torch.cat(correctness_score_tensor_lst, dim=0).sum(-1).cpu()  # (batch_size,)
         data_sources = np.concatenate(data_source_lst, axis=0)
         metric_dict = {}
 
@@ -436,30 +454,42 @@ class RayPPOTrainer(object):
         
         if 'wandb' in self.config.trainer.logger and self.config.trainer.log_table_val != 0:
             import wandb
-            if self.config.trainer.log_table_val < reward_tensor.shape[0] and self.config.trainer.log_table_val > 0:
+            if self.config.trainer.log_table_val < format_score_tensor.shape[0] and self.config.trainer.log_table_val > 0:
                 log_data_sources = data_sources[:self.config.trainer.log_table_val]
                 log_sequences_str = recorded_sequence_reward_lst[:self.config.trainer.log_table_val, 0]
                 log_ground_truth = recorded_sequence_reward_lst[:self.config.trainer.log_table_val, 1]
-                log_score = recorded_sequence_reward_lst[:self.config.trainer.log_table_val, 2]
+                log_format_score = recorded_sequence_reward_lst[:self.config.trainer.log_table_val, 2]
+                log_correctness_score = recorded_sequence_reward_lst[:self.config.trainer.log_table_val, 3]
             else:
                 log_data_sources = data_sources
                 log_sequences_str = recorded_sequence_reward_lst[:, 0]
                 log_ground_truth = recorded_sequence_reward_lst[:, 1]
-                log_score = recorded_sequence_reward_lst[:, 2]
+                log_format_score = recorded_sequence_reward_lst[:, 2]
+                log_correctness_score = recorded_sequence_reward_lst[:, 3]
 
-            metric_dict[f'val/generations_step_{self.global_steps}'] = wandb.Table(columns=["Data Source", "Sequence", "Ground Truth", "Score"], \
-                                                                                   data=np.stack([log_data_sources, log_sequences_str, log_ground_truth, log_score], axis=1))
+            metric_dict[f'val/generations_step_{self.global_steps}'] = wandb.Table(columns=["Data Source", "Sequence", "Ground Truth", "Format Score", "Correctness Score"], \
+                                                                                   data=np.stack([log_data_sources, log_sequences_str, log_ground_truth, log_format_score, log_correctness_score], axis=1))
 
         # evaluate test_score based on data source
         data_source_reward = {}
-        for i in range(reward_tensor.shape[0]):
+        for i in range(format_score_tensor.shape[0]):
             data_source = data_sources[i]
             if data_source not in data_source_reward:
                 data_source_reward[data_source] = []
-            data_source_reward[data_source].append(reward_tensor[i].item())
+            data_source_reward[data_source].append(format_score_tensor[i].item())
 
         for data_source, rewards in data_source_reward.items():
-            metric_dict[f'val/test_score/{data_source}'] = np.mean(rewards)
+            metric_dict[f'val/test_format_score/{data_source}'] = np.mean(rewards)
+
+        data_source_reward = {}
+        for i in range(correctness_score_tensor.shape[0]):
+            data_source = data_sources[i]
+            if data_source not in data_source_reward:
+                data_source_reward[data_source] = []
+            data_source_reward[data_source].append(correctness_score_tensor[i].item())
+
+        for data_source, rewards in data_source_reward.items():
+            metric_dict[f'val/test_correctness_score/{data_source}'] = np.mean(rewards)
 
         return metric_dict
 
@@ -646,8 +676,11 @@ class RayPPOTrainer(object):
                             batch = batch.union(reward_tensor)
 
                         # we combine with rule-based rm
-                        reward_tensor, _ = self.reward_fn(batch)
+                        format_score_tensor, correctness_score_tensor, _ = self.reward_fn(batch)
+                        reward_tensor = format_score_tensor + correctness_score_tensor
                         batch.batch['token_level_scores'] = reward_tensor
+                        batch.batch['token_level_format_scores'] = format_score_tensor
+                        batch.batch['token_level_correctness_scores'] = correctness_score_tensor
 
                         # compute rewards. apply_kl_penalty if available
                         if not self.config.actor_rollout_ref.actor.use_kl_loss:

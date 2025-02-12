@@ -36,7 +36,8 @@ class RewardManager():
         if 'rm_scores' in data.batch.keys():
             return data.batch['rm_scores']
 
-        reward_tensor = torch.zeros_like(data.batch['responses'], dtype=torch.float32)
+        format_score_tensor = torch.zeros_like(data.batch['responses'], dtype=torch.float32)
+        correctness_score_tensor = torch.zeros_like(data.batch['responses'], dtype=torch.float32)
 
         already_print_data_sources, recorded_sequence_reward = {}, []
 
@@ -64,10 +65,11 @@ class RewardManager():
             data_source = data_item.non_tensor_batch['data_source']
             compute_score_fn = _select_rm_score_fn(data_source)
 
-            score = compute_score_fn(solution_str=sequences_str, ground_truth=ground_truth)
-            reward_tensor[i, valid_response_length - 1] = score
+            format_score, correctness_score = compute_score_fn(solution_str=sequences_str, ground_truth=ground_truth)
+            format_score_tensor[i, valid_response_length - 1] = format_score
+            correctness_score_tensor[i, valid_response_length - 1] = correctness_score
 
-            recorded_sequence_reward.append([sequences_str, str(ground_truth), score])
+            recorded_sequence_reward.append([sequences_str, str(ground_truth), format_score, correctness_score])
 
             if data_source not in already_print_data_sources:
                 already_print_data_sources[data_source] = 0
@@ -76,7 +78,7 @@ class RewardManager():
                 already_print_data_sources[data_source] += 1
                 print(sequences_str)
 
-        return reward_tensor, recorded_sequence_reward
+        return format_score_tensor, correctness_score_tensor, recorded_sequence_reward
 
 
 import ray
