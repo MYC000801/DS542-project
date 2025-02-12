@@ -1,0 +1,73 @@
+#!/bin/bash
+#SBATCH --job-name=ppo_math     # create a short name for your job
+#SBATCH -c 96                # Number of cores (-c)
+#SBATCH -t 24:00:00          # Runtime in D-HH:MM, minimum of 10 minutes
+#SBATCH --mem=960000           # Memory pool for all cores (see also --mem-per-cpu)
+#SBATCH --mail-type=begin        # send email when job begins
+#SBATCH --mail-type=end          # send email when job ends
+#SBATCH --mail-type=fail         # send email if job fails
+#SBATCH --mail-user=zg292@cornell.edu
+#SBATCH --gres=gpu:nvidia_h100_80gb_hbm3:4
+#SBATCH -o ./runs/output_%j.out  # File to which STDOUT will be written, %j inserts jobid
+#SBATCH -e ./runs/errors_%j.err  # File to which STDERR will be written, %j inserts jobid
+#SBATCH -p kempner_h100
+#SBATCH --account=kempner_kdbrantley_lab
+
+######################
+### Set enviroment 
+######################
+
+module purge
+module load cuda/12.2.0-fasrc01
+module load gcc/10.2.0-fasrc01
+source /n/sw/Mambaforge-23.11.0-0/etc/profile.d/conda.sh
+conda activate zero
+export HF_HOME='/n/holylabs/LABS/kdbrantley_lab/Lab/zhaolin'
+
+GPUS_PER_NODE=4
+BATCH_SIZE=256
+MINI_BATCH_SIZE=128 # each batch we do BATCH_SIZE / MINI_BATCH_SIZE updates
+MICRO_BATCH_SIZEPER_DEVICE=1 # reduce to reduce memory but slower
+MODEL_SIZE="1.5"
+DATASET="math"
+EPOCH=10
+
+######################
+### Set Slurm Job
+######################
+export VLLM_ATTENTION_BACKEND=XFORMERS
+
+kl_coef=(1e-4 3e-4 1e-3 3e-3 1e-2 3e-2)
+
+for kl in "${kl_coef[@]}"; do
+    python3 -m verl.trainer.main_ppo \
+                data.train_files=/n/holylabs/LABS/kdbrantley_lab/Lab/zhaolin/reasoning/data/${DATASET}/train.parquet \
+                data.val_files=/n/holylabs/LABS/kdbrantley_lab/Lab/zhaolin/reasoning/data/${DATASET}/test.parquet \
+                data.max_prompt_length=512 \
+                data.max_response_length=2048 \
+                data.train_batch_size=$BATCH_SIZE \
+                data.val_batch_size=500 \
+                actor_rollout_ref.model.path=Qwen/Qwen2.5-${MODEL_SIZE}B \
+                actor_rollout_ref.actor.optim.lr=1e-6 \
+                actor_rollout_ref.actor.ppo_mini_batch_size=$MINI_BATCH_SIZE \
+                actor_rollout_ref.actor.ppo_micro_batch_size=$(expr $GPUS_PER_NODE \* $MICRO_BATCH_SIZEPER_DEVICE) \
+                actor_rollout_ref.rollout.log_prob_micro_batch_size=$(expr $GPUS_PER_NODE \* $MICRO_BATCH_SIZEPER_DEVICE) \
+                actor_rollout_ref.rollout.tensor_model_parallel_size=$GPUS_PER_NODE \
+                actor_rollout_ref.rollout.gpu_memory_utilization=0.4 \
+                actor_rollout_ref.ref.log_prob_micro_batch_size=$(expr $GPUS_PER_NODE \* $MICRO_BATCH_SIZEPER_DEVICE) \
+                critic.optim.lr=1e-5 \
+                critic.model.path=Qwen/Qwen2.5-${MODEL_SIZE}B \
+                critic.ppo_micro_batch_size=$(expr $GPUS_PER_NODE \* $MICRO_BATCH_SIZEPER_DEVICE) \
+                algorithm.kl_ctrl.kl_coef=${kl} \
+                trainer.logger=['wandb'] \
+                trainer.default_hdfs_dir=null \
+                trainer.n_gpus_per_node=$GPUS_PER_NODE \
+                trainer.nnodes=1 \
+                trainer.save_freq=-1 \
+                trainer.test_freq=50 \
+                trainer.project_name=${DATASET} \
+                trainer.experiment_name=qwen2.5-${MODEL_SIZE}b-ppo-kl-${kl} \
+                trainer.total_epochs=${EPOCH} # 2>&1 | tee verl_demo.log
+done
+
+# +trainer.val_before_train=False \

@@ -1,0 +1,86 @@
+#!/bin/bash
+#SBATCH --job-name=grpo_multinode     # create a short name for your job
+#SBATCH -t 1:00:00          # Runtime in D-HH:MM, minimum of 10 minutes
+#SBATCH --mem=0
+#SBATCH --mail-type=begin        # send email when job begins
+#SBATCH --mail-type=end          # send email when job ends
+#SBATCH --mail-type=fail         # send email if job fails
+#SBATCH --mail-user=zg292@cornell.edu
+#SBATCH -o ./runs/output_%j.out  # File to which STDOUT will be written, %j inserts jobid
+#SBATCH -e ./runs/errors_%j.err  # File to which STDERR will be written, %j inserts jobid
+#SBATCH -p kempner_h100
+#SBATCH --account=kempner_kdbrantley_lab
+#SBATCH --nodes=2
+#SBATCH --ntasks=2
+#SBATCH --gres=gpu:4
+#SBATCH --gpus-per-task=4
+#SBATCH --cpus-per-task=16
+
+######################
+### Set enviroment 
+######################
+
+module purge
+module load cuda/12.2.0-fasrc01
+module load gcc/10.2.0-fasrc01
+source /n/sw/Mambaforge-23.11.0-0/etc/profile.d/conda.sh
+conda activate zero
+export HF_HOME='/n/holylabs/LABS/kdbrantley_lab/Lab/zhaolin'
+
+GPUS_PER_NODE=4
+export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK}
+
+######################
+### Debug Variables
+######################
+export NCCL_DEBUG=INFO
+export NCCL_SHM_DISABLE=0
+export NCCL_ASYNC_ERROR_HANDLING=1 # https://github.com/bigscience-workshop/bigscience/blob/7ccf7e42577fe71e88cf8bed3b9ca965c7afb8f7/train/tr11-176B-ml/tr11-176B-ml.slurm#L207C1-L207C35
+export NCCL_P2P_LEVEL=NVL # https://github.com/huggingface/accelerate/issues/314#issuecomment-1565259831
+export LOGLEVEL=INFO
+
+######################
+### Set Network 
+######################
+head_node_ip=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1)
+head_node_port=( $( comm -23 <(seq 49152 65535 | sort) <(ss -Htan | awk '{print $4}' | cut -d':' -f2 | sort -u) | shuf | head -n 1 ) )
+export MASTER_ADDR=$head_node_ip
+export MASTER_PORT=$head_node_port
+export NUM_PROCESSES=$(expr $SLURM_NNODES \* $GPUS_PER_NODE)
+echo "NUM_PROCESSES=$NUM_PROCESSES"
+echo "NUM_PROCESSES-1=$(($NUM_PROCESSES - 1))"
+
+######################
+### Set Slurm Job
+######################
+export VLLM_ATTENTION_BACKEND=XFORMERS
+
+python3 -m verl.trainer.main_ppo \
+            data.train_files=/n/holylabs/LABS/kdbrantley_lab/Lab/zhaolin/reasoning/data/countdown/train.parquet \
+            data.val_files=/n/holylabs/LABS/kdbrantley_lab/Lab/zhaolin/reasoning/data/countdown/test.parquet \
+            data.max_prompt_length=256 \
+            data.max_response_length=1024 \
+            data.train_batch_size=256 \
+            data.val_batch_size=500 \
+            actor_rollout_ref.model.path=Qwen/Qwen2.5-3B \
+            actor_rollout_ref.actor.optim.lr=1e-6 \
+            actor_rollout_ref.actor.ppo_mini_batch_size=128 \
+            actor_rollout_ref.actor.ppo_micro_batch_size=2 \
+            actor_rollout_ref.rollout.log_prob_micro_batch_size=2 \
+            actor_rollout_ref.rollout.tensor_model_parallel_size=2 \
+            actor_rollout_ref.rollout.gpu_memory_utilization=0.4 \
+            actor_rollout_ref.ref.log_prob_micro_batch_size=2 \
+            critic.optim.lr=1e-5 \
+            critic.model.path=Qwen/Qwen2.5-3B \
+            critic.ppo_micro_batch_size=2 \
+            algorithm.kl_ctrl.kl_coef=0.001 \
+            trainer.logger=['wandb'] \
+            +trainer.val_before_train=False \
+            trainer.default_hdfs_dir=null \
+            trainer.n_gpus_per_node=4 \
+            trainer.nnodes=2 \
+            trainer.save_freq=-1 \
+            trainer.test_freq=50 \
+            trainer.project_name=countdown \
+            trainer.experiment_name=qwen2.5-3b-ppo \
+            trainer.total_epochs=15 # 2>&1 | tee verl_demo.log
