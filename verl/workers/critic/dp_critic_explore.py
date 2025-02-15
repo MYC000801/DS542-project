@@ -24,7 +24,7 @@ from torch import nn, optim
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
 from verl import DataProto
-from verl.trainer.ppo import core_algos
+from verl.trainer.explore import core_algos
 from verl.workers.critic import BasePPOCritic
 from verl.utils.py_functional import append_to_dict
 from verl.utils.torch_functional import masked_mean
@@ -32,6 +32,10 @@ from verl.utils.ulysses import ulysses_pad_and_slice_inputs, gather_outpus_and_u
 from verl.utils.seqlen_balancing import rearrange_micro_batches, get_reverse_idx
 
 from flash_attn.bert_padding import pad_input, unpad_input, rearrange, index_first_axis
+
+
+torch.set_printoptions(threshold=10_000)
+
 
 __all__ = ['DataParallelPPOCriticExplore']
 
@@ -148,7 +152,7 @@ class DataParallelPPOCriticExplore(BasePPOCritic):
         self.critic_module.train()
         metrics = {}
 
-        select_keys = ['input_ids', 'responses', 'attention_mask', 'position_ids', 'values', 'returns']
+        select_keys = ['attention_mask', 'input_ids', 'old_log_probs', 'responses', 'token_level_rewards', 'position_ids']
         batch = data.select(batch_keys=select_keys).batch
         # Split to make minibatch iterator for updating the actor
         # See PPO paper for details. https://arxiv.org/abs/1707.06347
@@ -167,32 +171,30 @@ class DataParallelPPOCriticExplore(BasePPOCritic):
 
             for data in micro_batches:
                 data = data.cuda()  # critic device is cpu when using offload
-                input_ids = data['input_ids']
-                responses = data['responses']
                 attention_mask = data['attention_mask']
-                position_ids = data['position_ids']
-                values = data['values']
-                returns = data['returns']
+                old_log_probs = data['old_log_probs']
+                responses = data['responses']
+                token_level_rewards = data['token_level_rewards']
                 response_length = responses.size(1)
 
                 eos_mask = attention_mask[:, -response_length - 1:-1]
 
-                vpreds = self._forward_micro_batch(data)
+                gpreds = self._forward_micro_batch(data)
 
-                # assert not torch.any(torch.isnan(vpreds)).item()
-
-                vf_loss, vf_clipfrac = core_algos.compute_value_loss(vpreds=vpreds,
-                                                                     values=values,
-                                                                     returns=returns,
-                                                                     eos_mask=eos_mask,
-                                                                     cliprange_value=self.config.cliprange_value)
-                loss = vf_loss / self.gradient_accumulation
+                gf_loss = core_algos.compute_g_loss(gpreds=gpreds,
+                                                    attention_mask=attention_mask,
+                                                    old_log_probs=old_log_probs,
+                                                    response_length=response_length,
+                                                    token_level_rewards=token_level_rewards,
+                                                    alpha=self.config.alpha,
+                                                    beta=self.config.beta,
+                                                    normalize_logprob=self.config.normalize_logprob,)
+                loss = gf_loss / self.gradient_accumulation
                 loss.backward()
 
                 data = {
-                    'critic/vf_loss': vf_loss.detach().item(),
-                    'critic/vf_clipfrac': vf_clipfrac.detach().item(),
-                    'critic/vpred_mean': masked_mean(vpreds, eos_mask).detach().item(),
+                    'critic/g_loss': gf_loss.detach().item(),
+                    'critic/gpred_mean': gpreds[:, 0].mean().detach().item(),
                 }
 
                 append_to_dict(metrics, data)

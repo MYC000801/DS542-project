@@ -160,6 +160,29 @@ def compute_rewards(token_level_scores, old_log_prob, ref_log_prob, kl_ratio):
     return token_level_scores - kl * kl_ratio
 
 
+def compute_policy_loss_explore(gvalues, attention_mask, log_probs, response_length, token_level_rewards, alpha, beta, normalize_logprob):
+
+    # g_w(x)
+    if gvalues != None:
+        g_x = gvalues[:, 0]
+    else:
+        g_x = 0
+
+    # gather logprobs
+    response_mask = attention_mask[:, -response_length:]
+    log_prob = (log_probs * response_mask).sum(dim=-1)
+    if normalize_logprob:
+        log_prob = log_prob / response_mask.sum(dim=-1)
+
+    # gather reward
+    reward = (token_level_rewards * response_mask).sum(dim=-1)
+
+    # compute loss
+    loss = alpha * (beta * log_prob + g_x - reward)**2
+
+    return loss.mean()
+
+
 def compute_policy_loss(old_log_prob, log_prob, advantages, eos_mask, cliprange):
     """Adapted from https://github.com/huggingface/trl/blob/main/trl/trainer/ppo_trainer.py#L1122
 
@@ -211,6 +234,26 @@ def compute_entropy_loss(logits, eos_mask):
     entropy = verl_F.entropy_from_logits(logits)  # (bs, response_len)
     entropy_loss = verl_F.masked_mean(entropy, mask=eos_mask)
     return entropy_loss
+
+
+def compute_g_loss(gpreds, attention_mask, old_log_probs, response_length, token_level_rewards, alpha, beta, normalize_logprob):
+
+    # g_w(x)
+    g_x = gpreds[:, 0]
+
+    # gather logprobs
+    response_mask = attention_mask[:, -response_length:]
+    log_prob = (old_log_probs * response_mask).sum(dim=-1)
+    if normalize_logprob:
+        log_prob = log_prob / response_mask.sum(dim=-1)
+
+    # gather reward
+    reward = (token_level_rewards * response_mask).sum(dim=-1)
+
+    # compute loss
+    loss = alpha * (beta * log_prob + g_x - reward)**2 - g_x
+
+    return loss.mean()
 
 
 def compute_value_loss(vpreds, returns, values, eos_mask, cliprange_value):

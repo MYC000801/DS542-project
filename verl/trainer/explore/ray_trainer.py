@@ -113,40 +113,6 @@ def apply_kl_penalty(data: DataProto, kl_ctrl: core_algos.AdaptiveKLController, 
     return data, metrics
 
 
-def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_repeat=1):
-    # prepare response group
-    # TODO: add other ways to estimate advantages
-    if adv_estimator == 'gae':
-        values = data.batch['values']
-        responses = data.batch['responses']
-        response_length = responses.size(-1)
-        attention_mask = data.batch['attention_mask']
-        response_mask = attention_mask[:, -response_length:]
-        token_level_rewards = data.batch['token_level_rewards']
-        advantages, returns = core_algos.compute_gae_advantage_return(token_level_rewards=token_level_rewards,
-                                                                      values=values,
-                                                                      eos_mask=response_mask,
-                                                                      gamma=gamma,
-                                                                      lam=lam)
-        data.batch['advantages'] = advantages
-        data.batch['returns'] = returns
-    elif adv_estimator == 'grpo':
-        token_level_rewards = data.batch['token_level_rewards']
-        index = data.non_tensor_batch['uid']
-        responses = data.batch['responses']
-        response_length = responses.size(-1)
-        attention_mask = data.batch['attention_mask']
-        response_mask = attention_mask[:, -response_length:]
-        advantages, returns = core_algos.compute_grpo_outcome_advantage(token_level_rewards=token_level_rewards,
-                                                                        eos_mask=response_mask,
-                                                                        index=index)
-        data.batch['advantages'] = advantages
-        data.batch['returns'] = returns
-    else:
-        raise NotImplementedError
-    return data
-
-
 def reduce_metrics(metrics: dict):
     for key, val in metrics.items():
         metrics[key] = np.mean(val)
@@ -176,9 +142,6 @@ def compute_data_metrics(batch, use_critic=True):
     sequence_correctness_score = batch.batch['token_level_correctness_scores'].sum(-1)
     sequence_reward = batch.batch['token_level_rewards'].sum(-1)
 
-    advantages = batch.batch['advantages']
-    returns = batch.batch['returns']
-
     max_response_length = batch.batch['responses'].shape[-1]
 
     prompt_mask = batch.batch['attention_mask'][:, :-max_response_length].bool()
@@ -190,14 +153,9 @@ def compute_data_metrics(batch, use_critic=True):
     prompt_length = response_info['prompt_length']
     response_length = response_info['response_length']
 
-    valid_adv = torch.masked_select(advantages, response_mask)
-    valid_returns = torch.masked_select(returns, response_mask)
-
     if use_critic:
         values = batch.batch['values']
-        valid_values = torch.masked_select(values, response_mask)
-        return_diff_var = torch.var(valid_returns - valid_values)
-        return_var = torch.var(valid_returns)
+        valid_values = values[:, 0]
 
     metrics = {
         # score
@@ -228,27 +186,11 @@ def compute_data_metrics(batch, use_critic=True):
             torch.max(sequence_reward).detach().item(),
         'critic/rewards/min':
             torch.min(sequence_reward).detach().item(),
-        # adv
-        'critic/advantages/mean':
-            torch.mean(valid_adv).detach().item(),
-        'critic/advantages/max':
-            torch.max(valid_adv).detach().item(),
-        'critic/advantages/min':
-            torch.min(valid_adv).detach().item(),
-        # returns
-        'critic/returns/mean':
-            torch.mean(valid_returns).detach().item(),
-        'critic/returns/max':
-            torch.max(valid_returns).detach().item(),
-        'critic/returns/min':
-            torch.min(valid_returns).detach().item(),
         **({
             # values
             'critic/values/mean': torch.mean(valid_values).detach().item(),
             'critic/values/max': torch.max(valid_values).detach().item(),
             'critic/values/min': torch.min(valid_values).detach().item(),
-            # vf explained var
-            'critic/vf_explained_var': (1.0 - return_diff_var / (return_var + 1e-5)).detach().item(),
         } if use_critic else {}),
 
         # response length
@@ -510,12 +452,12 @@ class RayExploreTrainer(object):
             raise NotImplementedError
 
         # create critic
-        if self.config.algorithm.adv_estimator == 'gae':
+        if self.config.algorithm.loss_type == 'with_g':
             resource_pool = self.resource_pool_manager.get_resource_pool(Role.Critic)
             critic_cls = RayClassWithInitArgs(cls=self.role_worker_mapping[Role.Critic], config=self.config.critic)
             self.resource_pool_to_cls[resource_pool]['critic'] = critic_cls
             self.use_critic = True
-        elif self.config.algorithm.adv_estimator == 'grpo':
+        elif self.config.algorithm.loss_type == 'without_g':
             self.use_critic = False
         else:
             raise NotImplementedError
@@ -664,6 +606,12 @@ class RayExploreTrainer(object):
                     if self.use_critic:
                         with _timer('values', timing_raw):
                             values = self.critic_wg.compute_values(batch)
+
+                            # nomalize values
+                            if self.config.algorithm.normalize_g:
+                                values = values.batch['values']
+                                values[:, 0] = (values[:, 0] - values[:, 0].mean()) / (values[:, 0].std() + 1e-5)
+                                values = DataProto.from_dict(tensors={'values': values})
                             batch = batch.union(values)
 
                     with _timer('adv', timing_raw):
@@ -690,13 +638,6 @@ class RayExploreTrainer(object):
                             metrics.update(kl_metrics)
                         else:
                             batch.batch['token_level_rewards'] = batch.batch['token_level_scores']
-
-                        # compute advantages, executed on the driver process
-                        batch = compute_advantage(batch,
-                                                  adv_estimator=self.config.algorithm.adv_estimator,
-                                                  gamma=self.config.algorithm.gamma,
-                                                  lam=self.config.algorithm.lam,
-                                                  num_repeat=self.config.actor_rollout_ref.rollout.n)
 
                     # update critic
                     if self.use_critic:

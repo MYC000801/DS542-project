@@ -20,6 +20,11 @@ actor_rollout_ref:
     use_remove_padding: False
   actor:
     strategy: fsdp  # This is for backward-compatibility
+    loss_type: ${algorithm.loss_type}
+    normalize_logprob: ${algorithm.normalize_logprob}
+    normalize_g: ${algorithm.normalize_g}
+    beta: ${algorithm.beta}
+    alpha: ${algorithm.alpha}
     ppo_mini_batch_size: 256
     ppo_micro_batch_size: 64
     use_dynamic_bsz: False
@@ -117,6 +122,11 @@ critic:
   shuffle: ${actor_rollout_ref.actor.shuffle}
   grad_clip: 1.0
   cliprange_value: 0.5
+  loss_type: ${algorithm.loss_type}
+  normalize_logprob: ${algorithm.normalize_logprob}
+  normalize_g: ${algorithm.normalize_g}
+  beta: ${algorithm.beta}
+  alpha: ${algorithm.alpha}
 
 reward_model:
   enable: False
@@ -138,7 +148,11 @@ reward_model:
 algorithm:
   gamma: 1.0
   lam: 1.0
-  adv_estimator: gae
+  loss_type: with_g # without_g, with_g
+  normalize_logprob: True
+  normalize_g: True
+  beta: 0.01
+  alpha: 1
   kl_penalty: kl  # how to estimate kl divergence
   kl_ctrl:
     type: fixed

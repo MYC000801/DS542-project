@@ -107,6 +107,7 @@ def main_task(config):
 
     # download the checkpoint from hdfs
     local_path = copy_local_path_from_hdfs(config.actor_rollout_ref.model.path)
+    print(f'local_path: {local_path}')
 
     # instantiate tokenizer
     from verl.utils import hf_tokenizer
@@ -115,7 +116,7 @@ def main_task(config):
     # define worker classes
     if config.actor_rollout_ref.actor.strategy == 'fsdp':
         assert config.actor_rollout_ref.actor.strategy == config.critic.strategy
-        from verl.workers.fsdp_workers import ActorRolloutRefWorker, CriticWorker
+        from verl.workers.fsdp_workers_explore import ActorRolloutRefWorker, CriticWorker
         from verl.single_controller.ray import RayWorkerGroup
         ray_worker_group_cls = RayWorkerGroup
 
@@ -154,7 +155,7 @@ def main_task(config):
     # - The reward type depends on the tag of the data
     if config.reward_model.enable:
         if config.reward_model.strategy == 'fsdp':
-            from verl.workers.fsdp_workers import RewardModelWorker
+            from verl.workers.fsdp_workers_explore import RewardModelWorker
         elif config.reward_model.strategy == 'megatron':
             from verl.workers.megatron_workers import RewardModelWorker
         else:

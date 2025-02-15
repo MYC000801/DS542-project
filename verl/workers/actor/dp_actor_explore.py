@@ -23,7 +23,7 @@ from torch import nn
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
 from verl import DataProto
-from verl.trainer.ppo import core_algos
+from verl.trainer.explore import core_algos
 from verl.workers.actor import BasePPOActor
 from verl.utils.py_functional import append_to_dict
 from verl.utils.torch_functional import logprobs_from_logits, masked_mean
@@ -208,9 +208,11 @@ class DataParallelPPOActorExplore(BasePPOActor):
         self.gradient_accumulation = self.config.ppo_mini_batch_size // self.config.ppo_micro_batch_size
         temperature = data.meta_info['temperature']  # temperature must be in the data.meta_info to avoid slient error
 
-        select_keys = ['responses', 'input_ids', 'attention_mask', 'position_ids', 'old_log_probs', 'advantages']
+        select_keys = ['attention_mask', 'input_ids', 'responses', 'token_level_rewards', 'position_ids']
         if self.config.use_kl_loss:
             select_keys.append('ref_log_prob')
+        if self.config.loss_type == 'with_g':
+            select_keys.append('values')
         batch = data.select(batch_keys=select_keys).batch
 
         # Split to make minibatch iterator for updating the actor
@@ -232,24 +234,31 @@ class DataParallelPPOActorExplore(BasePPOActor):
 
             for data in micro_batches:
                 data = data.cuda()  # actor device is cpu when using offload
+                if self.config.loss_type == 'with_g':
+                    values = data['values']
+                elif self.config.loss_type == 'without_g':
+                    values = None
+                else:
+                    raise NotImplementedError
                 responses = data['responses']
                 response_length = responses.size(1)
                 attention_mask = data['attention_mask']
                 response_mask = attention_mask[:, -response_length:]
-                old_log_prob = data['old_log_probs']
-                advantages = data['advantages']
-
-                clip_ratio = self.config.clip_ratio
+                token_level_rewards = data['token_level_rewards']
                 entropy_coeff = self.config.entropy_coeff
 
                 # all return: (bsz, response_length)
                 entropy, log_prob = self._forward_micro_batch(micro_batch=data, temperature=temperature)
 
-                pg_loss, pg_clipfrac, ppo_kl = core_algos.compute_policy_loss(old_log_prob=old_log_prob,
-                                                                              log_prob=log_prob,
-                                                                              advantages=advantages,
-                                                                              eos_mask=response_mask,
-                                                                              cliprange=clip_ratio)
+                pg_loss = core_algos.compute_policy_loss_explore(gvalues=values,
+                                                                 attention_mask=attention_mask,
+                                                                 log_probs=log_prob,
+                                                                 response_length=response_length,
+                                                                 token_level_rewards=token_level_rewards,
+                                                                 alpha=self.config.alpha,
+                                                                 beta=self.config.beta,
+                                                                 normalize_logprob=self.config.normalize_logprob,)
+
                 # compute entropy loss from entropy
                 entropy_loss = verl_F.masked_mean(entropy, response_mask)
 
@@ -274,8 +283,6 @@ class DataParallelPPOActorExplore(BasePPOActor):
                 data = {
                     'actor/entropy_loss': entropy_loss.detach().item(),
                     'actor/pg_loss': pg_loss.detach().item(),
-                    'actor/pg_clipfrac': pg_clipfrac.detach().item(),
-                    'actor/ppo_kl': ppo_kl.detach().item(),
                 }
                 append_to_dict(metrics, data)
 

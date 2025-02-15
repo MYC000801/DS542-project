@@ -32,6 +32,7 @@ MAX_PROMPT_LENGTH=256
 MAX_RESPONSE_LENGTH=1024
 DATASET="countdown"
 USE_KL_LOSS="True"
+EPOCH=1
 
 ######################
 ### Set Slurm Job
