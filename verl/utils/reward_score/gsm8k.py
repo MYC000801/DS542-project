@@ -54,10 +54,13 @@ def compute_score(solution_str, ground_truth, method='strict', format_score=0., 
         score: the score for the correct answer
     """
     answer = extract_solution(solution_str=solution_str, method=method)
+
+    mean_score = score / 2
+
     if answer is None:
-        return 0, 0
+        return 0, -mean_score
     else:
         if answer == ground_truth:
-            return format_score, score - format_score
+            return format_score, score - format_score - mean_score
         else:
-            return format_score, 0
+            return format_score, -mean_score

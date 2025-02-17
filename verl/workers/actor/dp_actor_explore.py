@@ -208,7 +208,7 @@ class DataParallelPPOActorExplore(BasePPOActor):
         self.gradient_accumulation = self.config.ppo_mini_batch_size // self.config.ppo_micro_batch_size
         temperature = data.meta_info['temperature']  # temperature must be in the data.meta_info to avoid slient error
 
-        select_keys = ['attention_mask', 'input_ids', 'responses', 'token_level_rewards', 'position_ids']
+        select_keys = ['attention_mask', 'input_ids', 'responses', 'token_level_rewards', 'position_ids', 'old_log_probs']
         if self.config.use_kl_loss:
             select_keys.append('ref_log_prob')
         if self.config.loss_type == 'with_g':
@@ -245,6 +245,7 @@ class DataParallelPPOActorExplore(BasePPOActor):
                 attention_mask = data['attention_mask']
                 response_mask = attention_mask[:, -response_length:]
                 token_level_rewards = data['token_level_rewards']
+                old_log_probs = data['old_log_probs']
                 entropy_coeff = self.config.entropy_coeff
 
                 # all return: (bsz, response_length)
@@ -252,12 +253,14 @@ class DataParallelPPOActorExplore(BasePPOActor):
 
                 pg_loss = core_algos.compute_policy_loss_explore(gvalues=values,
                                                                  attention_mask=attention_mask,
+                                                                 old_log_probs=old_log_probs,
                                                                  log_probs=log_prob,
                                                                  response_length=response_length,
                                                                  token_level_rewards=token_level_rewards,
                                                                  alpha=self.config.alpha,
                                                                  beta=self.config.beta,
-                                                                 normalize_logprob=self.config.normalize_logprob,)
+                                                                 normalize_logprob=self.config.normalize_logprob,
+                                                                 conservative=self.config.conservative,)
 
                 # compute entropy loss from entropy
                 entropy_loss = verl_F.masked_mean(entropy, response_mask)

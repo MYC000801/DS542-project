@@ -39,87 +39,133 @@ EPOCH=1
 ######################
 export VLLM_ATTENTION_BACKEND=XFORMERS
 
-LOSS_TYPE="without_g"
-NORMALIZE_LOGPROB="True"
-NORMALIZE_G="True"
+CONSERVATIVE="False"
 
-betas=(1e-5 1e-4 1e-3 1e-2 1e-1)
-entropy_coeff=1e-3
+entropy_coeffs=(0)
 batch_sizes=(512)
 lrs=(1e-6)
-kl_coef=(1e-4 1e-3 1e-2)
+kl_coef=(0)
 
-for kl in "${kl_coef[@]}"; do
-    for beta in "${betas[@]}"; do
-        for lr in "${lrs[@]}"; do
-            for bs in "${batch_sizes[@]}"; do
-                python3 -m verl.trainer.main_explore \
-                            algorithm.loss_type=${LOSS_TYPE} \
-                            algorithm.normalize_logprob=${NORMALIZE_LOGPROB} \
-                            algorithm.normalize_g=${NORMALIZE_G} \
-                            algorithm.beta=${beta} \
-                            algorithm.alpha=1 \
-                            data.train_files=/n/holylabs/LABS/kdbrantley_lab/Lab/zhaolin/reasoning/data/${DATASET}/train.parquet \
-                            data.val_files=/n/holylabs/LABS/kdbrantley_lab/Lab/zhaolin/reasoning/data/${DATASET}/test.parquet \
-                            data.max_prompt_length=$MAX_PROMPT_LENGTH \
-                            data.max_response_length=$MAX_RESPONSE_LENGTH \
-                            data.train_batch_size=${bs} \
-                            data.val_batch_size=500 \
-                            actor_rollout_ref.model.path=Qwen/Qwen2.5-${MODEL_SIZE}B \
-                            actor_rollout_ref.actor.optim.lr=$lr \
-                            actor_rollout_ref.actor.ppo_mini_batch_size=$MINI_BATCH_SIZE \
-                            actor_rollout_ref.actor.ppo_micro_batch_size=$(expr $GPUS_PER_NODE \* $MICRO_BATCH_SIZEPER_DEVICE) \
-                            actor_rollout_ref.actor.entropy_coeff=${entropy_coeff} \
-                            actor_rollout_ref.rollout.log_prob_micro_batch_size=$(expr $GPUS_PER_NODE \* $MICRO_BATCH_SIZEPER_DEVICE) \
-                            actor_rollout_ref.rollout.tensor_model_parallel_size=$GPUS_PER_NODE \
-                            actor_rollout_ref.rollout.gpu_memory_utilization=0.4 \
-                            actor_rollout_ref.ref.log_prob_micro_batch_size=$(expr $GPUS_PER_NODE \* $MICRO_BATCH_SIZEPER_DEVICE) \
-                            critic.optim.lr=1e-5 \
-                            critic.model.path=Qwen/Qwen2.5-${MODEL_SIZE}B \
-                            critic.ppo_micro_batch_size=$(expr $GPUS_PER_NODE \* $MICRO_BATCH_SIZEPER_DEVICE) \
-                            algorithm.kl_ctrl.kl_coef=${kl} \
-                            trainer.logger=['wandb'] \
-                            +trainer.val_before_train=False \
-                            trainer.default_hdfs_dir=null \
-                            trainer.n_gpus_per_node=$GPUS_PER_NODE \
-                            trainer.nnodes=1 \
-                            trainer.save_freq=-1 \
-                            trainer.test_freq=50 \
-                            trainer.project_name=${DATASET} \
-                            trainer.experiment_name=qwen2.5-${MODEL_SIZE}b-${LOSS_TYPE}-bs-${bs}-ec-${entropy_coeff}-lr-${lr}-kl-${kl}-beta-${beta} \
-                            trainer.total_epochs=${EPOCH} # 2>&1 | tee verl_demo.log
+# ablate without g
+betas=(1e-6 1e-5 1e-4 1e-3)
+alphas=(1)
+loss_types=("without_g")
+normalize_logprobs=("False")
+normalize_gs=("False")
+
+for loss_type in "${loss_types[@]}"; do
+    for normalize_logprob in "${normalize_logprobs[@]}"; do
+        for normalize_g in "${normalize_gs[@]}"; do
+            for entropy_coeff in "${entropy_coeffs[@]}"; do
+                for kl in "${kl_coef[@]}"; do
+                    for beta in "${betas[@]}"; do
+                        for alpha in "${alphas[@]}"; do
+                            for lr in "${lrs[@]}"; do
+                                for bs in "${batch_sizes[@]}"; do
+                                    python3 -m verl.trainer.main_explore \
+                                                algorithm.loss_type=${loss_type} \
+                                                algorithm.normalize_logprob=${normalize_logprob} \
+                                                algorithm.normalize_g=${normalize_g} \
+                                                algorithm.conservative=${CONSERVATIVE} \
+                                                algorithm.beta=${beta} \
+                                                algorithm.alpha=${alpha} \
+                                                data.train_files=/n/holylabs/LABS/kdbrantley_lab/Lab/zhaolin/reasoning/data/${DATASET}/train.parquet \
+                                                data.val_files=/n/holylabs/LABS/kdbrantley_lab/Lab/zhaolin/reasoning/data/${DATASET}/test.parquet \
+                                                data.max_prompt_length=$MAX_PROMPT_LENGTH \
+                                                data.max_response_length=$MAX_RESPONSE_LENGTH \
+                                                data.train_batch_size=${bs} \
+                                                data.val_batch_size=500 \
+                                                actor_rollout_ref.model.path=Qwen/Qwen2.5-${MODEL_SIZE}B \
+                                                actor_rollout_ref.actor.optim.lr=$lr \
+                                                actor_rollout_ref.actor.ppo_mini_batch_size=$MINI_BATCH_SIZE \
+                                                actor_rollout_ref.actor.ppo_micro_batch_size=$(expr $GPUS_PER_NODE \* $MICRO_BATCH_SIZEPER_DEVICE) \
+                                                actor_rollout_ref.actor.entropy_coeff=${entropy_coeff} \
+                                                actor_rollout_ref.rollout.log_prob_micro_batch_size=$(expr $GPUS_PER_NODE \* $MICRO_BATCH_SIZEPER_DEVICE) \
+                                                actor_rollout_ref.rollout.tensor_model_parallel_size=$GPUS_PER_NODE \
+                                                actor_rollout_ref.rollout.gpu_memory_utilization=0.4 \
+                                                actor_rollout_ref.ref.log_prob_micro_batch_size=$(expr $GPUS_PER_NODE \* $MICRO_BATCH_SIZEPER_DEVICE) \
+                                                critic.optim.lr=1e-5 \
+                                                critic.model.path=Qwen/Qwen2.5-${MODEL_SIZE}B \
+                                                critic.ppo_micro_batch_size=$(expr $GPUS_PER_NODE \* $MICRO_BATCH_SIZEPER_DEVICE) \
+                                                algorithm.kl_ctrl.kl_coef=${kl} \
+                                                trainer.logger=['wandb'] \
+                                                +trainer.val_before_train=False \
+                                                trainer.default_hdfs_dir=null \
+                                                trainer.n_gpus_per_node=$GPUS_PER_NODE \
+                                                trainer.nnodes=1 \
+                                                trainer.save_freq=-1 \
+                                                trainer.test_freq=50 \
+                                                trainer.project_name=${DATASET} \
+                                                trainer.experiment_name=qwen2.5-${MODEL_SIZE}b-${loss_type}-${normalize_logprob}-${normalize_g}-bs-${bs}-ec-${entropy_coeff}-lr-${lr}-kl-${kl}-beta-${beta}-alpha-${alpha} \
+                                                trainer.total_epochs=${EPOCH} # 2>&1 | tee verl_demo.log
+                                done
+                            done
+                        done
+                    done
+                done
             done
         done
     done
 done
 
-# python3 -m verl.trainer.main_explore \
-#                         algorithm.loss_type=without_g \
-#                         data.train_files=/n/holylabs/LABS/kdbrantley_lab/Lab/zhaolin/reasoning/data/countdown/train.parquet \
-#                         data.val_files=/n/holylabs/LABS/kdbrantley_lab/Lab/zhaolin/reasoning/data/countdown/test.parquet \
-#                         data.max_prompt_length=256 \
-#                         data.max_response_length=1024 \
-#                         data.train_batch_size=256 \
-#                         data.val_batch_size=500 \
-#                         actor_rollout_ref.model.path=Qwen/Qwen2.5-1.5B \
-#                         actor_rollout_ref.actor.optim.lr=1e-6 \
-#                         actor_rollout_ref.actor.ppo_mini_batch_size=128 \
-#                         actor_rollout_ref.actor.ppo_micro_batch_size=4 \
-#                         actor_rollout_ref.rollout.log_prob_micro_batch_size=4 \
-#                         actor_rollout_ref.rollout.tensor_model_parallel_size=4 \
-#                         actor_rollout_ref.rollout.gpu_memory_utilization=0.4 \
-#                         actor_rollout_ref.ref.log_prob_micro_batch_size=4 \
-#                         critic.optim.lr=1e-5 \
-#                         critic.model.path=Qwen/Qwen2.5-1.5B \
-#                         critic.ppo_micro_batch_size=8 \
-#                         algorithm.kl_ctrl.kl_coef=1e-3 \
-#                         trainer.logger=['wandb'] \
-#                         +trainer.val_before_train=False \
-#                         trainer.default_hdfs_dir=null \
-#                         trainer.n_gpus_per_node=4 \
-#                         trainer.nnodes=1 \
-#                         trainer.save_freq=-1 \
-#                         trainer.test_freq=50 \
-#                         trainer.project_name=countdown \
-#                         trainer.experiment_name=qwen2.5-1.5b-with_g-norm-True-bs-256-lr-1e-6-kl-1e-3 \
-#                         trainer.total_epochs=1 # 2>&1 | tee verl_demo.log
+# ablate with g
+betas=(1e-2)
+alphas=(0.01 0.03 0.1 0.3)
+loss_types=("with_g")
+normalize_logprobs=("True")
+normalize_gs=("False")
+
+for loss_type in "${loss_types[@]}"; do
+    for normalize_logprob in "${normalize_logprobs[@]}"; do
+        for normalize_g in "${normalize_gs[@]}"; do
+            for entropy_coeff in "${entropy_coeffs[@]}"; do
+                for kl in "${kl_coef[@]}"; do
+                    for beta in "${betas[@]}"; do
+                        for alpha in "${alphas[@]}"; do
+                            for lr in "${lrs[@]}"; do
+                                for bs in "${batch_sizes[@]}"; do
+                                    python3 -m verl.trainer.main_explore \
+                                                algorithm.loss_type=${loss_type} \
+                                                algorithm.normalize_logprob=${normalize_logprob} \
+                                                algorithm.normalize_g=${normalize_g} \
+                                                algorithm.conservative=${CONSERVATIVE} \
+                                                algorithm.beta=${beta} \
+                                                algorithm.alpha=${alpha} \
+                                                data.train_files=/n/holylabs/LABS/kdbrantley_lab/Lab/zhaolin/reasoning/data/${DATASET}/train.parquet \
+                                                data.val_files=/n/holylabs/LABS/kdbrantley_lab/Lab/zhaolin/reasoning/data/${DATASET}/test.parquet \
+                                                data.max_prompt_length=$MAX_PROMPT_LENGTH \
+                                                data.max_response_length=$MAX_RESPONSE_LENGTH \
+                                                data.train_batch_size=${bs} \
+                                                data.val_batch_size=500 \
+                                                actor_rollout_ref.model.path=Qwen/Qwen2.5-${MODEL_SIZE}B \
+                                                actor_rollout_ref.actor.optim.lr=$lr \
+                                                actor_rollout_ref.actor.ppo_mini_batch_size=$MINI_BATCH_SIZE \
+                                                actor_rollout_ref.actor.ppo_micro_batch_size=$(expr $GPUS_PER_NODE \* $MICRO_BATCH_SIZEPER_DEVICE) \
+                                                actor_rollout_ref.actor.entropy_coeff=${entropy_coeff} \
+                                                actor_rollout_ref.rollout.log_prob_micro_batch_size=$(expr $GPUS_PER_NODE \* $MICRO_BATCH_SIZEPER_DEVICE) \
+                                                actor_rollout_ref.rollout.tensor_model_parallel_size=$GPUS_PER_NODE \
+                                                actor_rollout_ref.rollout.gpu_memory_utilization=0.4 \
+                                                actor_rollout_ref.ref.log_prob_micro_batch_size=$(expr $GPUS_PER_NODE \* $MICRO_BATCH_SIZEPER_DEVICE) \
+                                                critic.optim.lr=1e-5 \
+                                                critic.model.path=Qwen/Qwen2.5-${MODEL_SIZE}B \
+                                                critic.ppo_micro_batch_size=$(expr $GPUS_PER_NODE \* $MICRO_BATCH_SIZEPER_DEVICE) \
+                                                algorithm.kl_ctrl.kl_coef=${kl} \
+                                                trainer.logger=['wandb'] \
+                                                +trainer.val_before_train=False \
+                                                trainer.default_hdfs_dir=null \
+                                                trainer.n_gpus_per_node=$GPUS_PER_NODE \
+                                                trainer.nnodes=1 \
+                                                trainer.save_freq=-1 \
+                                                trainer.test_freq=50 \
+                                                trainer.project_name=${DATASET} \
+                                                trainer.experiment_name=qwen2.5-${MODEL_SIZE}b-${loss_type}-${normalize_logprob}-${normalize_g}-bs-${bs}-ec-${entropy_coeff}-lr-${lr}-kl-${kl}-beta-${beta}-alpha-${alpha} \
+                                                trainer.total_epochs=${EPOCH} # 2>&1 | tee verl_demo.log
+                                done
+                            done
+                        done
+                    done
+                done
+            done
+        done
+    done
+done

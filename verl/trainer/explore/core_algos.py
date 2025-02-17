@@ -160,7 +160,7 @@ def compute_rewards(token_level_scores, old_log_prob, ref_log_prob, kl_ratio):
     return token_level_scores - kl * kl_ratio
 
 
-def compute_policy_loss_explore(gvalues, attention_mask, log_probs, response_length, token_level_rewards, alpha, beta, normalize_logprob):
+def compute_policy_loss_explore(gvalues, attention_mask, old_log_probs, log_probs, response_length, token_level_rewards, alpha, beta, normalize_logprob, conservative):
 
     # g_w(x)
     if gvalues != None:
@@ -170,15 +170,20 @@ def compute_policy_loss_explore(gvalues, attention_mask, log_probs, response_len
 
     # gather logprobs
     response_mask = attention_mask[:, -response_length:]
+    old_log_prob = (old_log_probs * response_mask).sum(dim=-1)
     log_prob = (log_probs * response_mask).sum(dim=-1)
     if normalize_logprob:
         log_prob = log_prob / response_mask.sum(dim=-1)
+        old_log_prob = old_log_prob / response_mask.sum(dim=-1)
 
     # gather reward
     reward = (token_level_rewards * response_mask).sum(dim=-1)
 
     # compute loss
-    loss = alpha * (beta * log_prob + g_x - reward)**2
+    if conservative:
+        loss = alpha * (beta * (log_prob - old_log_prob) - reward)**2
+    else:
+        loss = alpha * (beta * log_prob + g_x - reward)**2
 
     return loss.mean()
 

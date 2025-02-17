@@ -25,6 +25,7 @@ actor_rollout_ref:
     normalize_g: ${algorithm.normalize_g}
     beta: ${algorithm.beta}
     alpha: ${algorithm.alpha}
+    conservative: ${algorithm.conservative}
     ppo_mini_batch_size: 256
     ppo_micro_batch_size: 64
     use_dynamic_bsz: False
@@ -127,6 +128,7 @@ critic:
   normalize_g: ${algorithm.normalize_g}
   beta: ${algorithm.beta}
   alpha: ${algorithm.alpha}
+  conservative: ${algorithm.conservative}
 
 reward_model:
   enable: False
@@ -150,6 +152,7 @@ algorithm:
   lam: 1.0
   loss_type: with_g # without_g, with_g
   normalize_logprob: True
+  conservative: True
   normalize_g: True
   beta: 0.01
   alpha: 1
