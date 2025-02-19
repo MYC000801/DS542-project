@@ -181,9 +181,9 @@ def compute_policy_loss_explore(gvalues, attention_mask, old_log_probs, log_prob
 
     # compute loss
     if conservative:
-        loss = alpha * (beta * (log_prob - old_log_prob) - reward)**2
+        loss = (beta * (log_prob - old_log_prob) - reward)**2
     else:
-        loss = alpha * (beta * log_prob + g_x - reward)**2
+        loss = (beta * log_prob + g_x - reward)**2
 
     return loss.mean()
 
@@ -256,7 +256,7 @@ def compute_g_loss(gpreds, attention_mask, old_log_probs, response_length, token
     reward = (token_level_rewards * response_mask).sum(dim=-1)
 
     # compute loss
-    loss = alpha * (beta * log_prob + g_x - reward)**2 - g_x
+    loss = (beta * log_prob + g_x - reward)**2 - g_x / alpha
 
     return loss.mean()
 
