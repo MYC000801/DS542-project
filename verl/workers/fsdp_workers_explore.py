@@ -401,7 +401,7 @@ class ActorRolloutRefWorker(Worker):
     def generate_sequences(self, prompts: DataProto):
         prompts = prompts.to('cuda')
         # set to False if it is validation
-        recompute_log_prob = prompts.meta_info.get('recompute_log_prob', True)
+        recompute_log_prob = prompts.meta_info.get('recompute_log_prob', False)
 
         assert self._is_rollout
         if self._is_offload_param:
@@ -471,6 +471,41 @@ class ActorRolloutRefWorker(Worker):
 
         if self._is_offload_param:
             offload_fsdp_param_and_grad(module=self.ref_module_fsdp, offload_grad=self._is_offload_grad)
+        torch.cuda.empty_cache()
+        return output
+
+    @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
+    def compute_old_log_prob(self, data: DataProto):
+        assert self._is_actor
+
+        data = data.to('cuda')
+
+        if self._is_offload_param:
+            load_fsdp_param_and_grad(module=self.actor_module_fsdp,
+                                     device_id=torch.cuda.current_device(),
+                                     load_grad=self._is_offload_grad)
+
+        data.meta_info['micro_batch_size'] = self.config.rollout.log_prob_micro_batch_size
+        data.meta_info['max_token_len'] = self.config.rollout.log_prob_max_token_len_per_gpu
+        data.meta_info['use_dynamic_bsz'] = self.config.rollout.log_prob_use_dynamic_bsz
+        data.meta_info['temperature'] = self.config.rollout.temperature
+        meta_info_dict = {
+            'micro_batch_size': self.config.rollout.log_prob_micro_batch_size,
+            'max_token_len'   : self.config.rollout.log_prob_max_token_len_per_gpu,
+            'use_dynamic_bsz' : self.config.rollout.log_prob_use_dynamic_bsz,
+            'temperature'     : self.config.rollout.temperature,
+        }
+
+        with self.ulysses_sharding_manager:
+            data = self.ulysses_sharding_manager.preprocess_data(data)
+            output = self.actor.compute_log_prob(data=data)
+            output = DataProto.from_dict(tensors={'old_log_probs': output}, meta_info=meta_info_dict)
+            output = self.ulysses_sharding_manager.postprocess_data(output)
+
+        output = output.to('cpu')
+
+        if self._is_offload_param:
+            offload_fsdp_param_and_grad(module=self.actor_module_fsdp, offload_grad=self._is_offload_grad)
         torch.cuda.empty_cache()
         return output
 
