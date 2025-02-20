@@ -34,6 +34,7 @@ from verl.single_controller.ray import RayResourcePool, RayWorkerGroup, RayClass
 from verl.single_controller.ray.base import create_colocated_worker_cls
 from verl.trainer.explore import core_algos
 from verl.utils.seqlen_balancing import get_seqlen_balanced_partitions, log_seqlen_unbalance
+import copy
 
 WorkerType = Type[Worker]
 
@@ -453,12 +454,17 @@ class RayExploreTrainer(object):
 
         # create critic
         if self.config.algorithm.loss_type == 'with_g':
+            assert self.config.algorithm.conservative == False
             resource_pool = self.resource_pool_manager.get_resource_pool(Role.Critic)
             critic_cls = RayClassWithInitArgs(cls=self.role_worker_mapping[Role.Critic], config=self.config.critic)
             self.resource_pool_to_cls[resource_pool]['critic'] = critic_cls
             self.use_critic = True
+            self.alpha = self.config.algorithm.alpha
+            self.alpha_decay_coef = self.config.algorithm.alpha_decay_coef
         elif self.config.algorithm.loss_type == 'without_g':
             self.use_critic = False
+            self.alpha = 1
+            self.alpha_decay_coef = 0
         else:
             raise NotImplementedError
 
@@ -566,6 +572,10 @@ class RayExploreTrainer(object):
         # we start from step 1
         self.global_steps += 1
 
+        # initiaze alpha
+        alpha = self.alpha * (self.global_steps ** self.alpha_decay_coef)
+
+        replay_buffer = None
         for epoch in range(self.config.trainer.total_epochs):
             for batch_dict in self.train_dataloader:
                 print(f'epoch {epoch}, step {self.global_steps}')
@@ -593,8 +603,32 @@ class RayExploreTrainer(object):
                     # Please take care when you implement group based adv computation such as GRPO and rloo
                     self._balance_batch(batch, metrics=metrics)
 
+                    # add to replay buffer
+                    if replay_buffer == None:
+                        replay_weights = np.full(self.config.data.train_batch_size, 1 / self.config.data.train_batch_size)
+                        replay_buffer = copy.deepcopy(batch)
+                    else:
+                        # resize buffer if it over the limit
+                        if len(replay_buffer) > self.config.algorithm.replay_size:
+                            replay_buffer.batch = replay_buffer.batch[-self.config.algorithm.replay_size:]
+                            for key in replay_buffer.non_tensor_batch.keys():
+                                replay_buffer.non_tensor_batch[key] = replay_buffer.non_tensor_batch[key][-self.config.algorithm.replay_size:]
+                        replay_weights = np.full(len(replay_buffer), self.config.algorithm.replay_weight * self.config.data.train_batch_size / len(replay_buffer))
+                        replay_weights = np.concatenate((replay_weights, np.ones(self.config.data.train_batch_size)))
+                        replay_weights /= replay_weights.sum()
+                        replay_buffer = DataProto.concat([replay_buffer, batch])
+
+                    # sample from replay buffer
+                    selected = np.random.choice(np.arange(len(replay_weights)), size=self.config.data.train_batch_size, replace=False, p=replay_weights)
+
+                    # form the current batch
+                    batch.batch = replay_buffer.batch[selected]
+                    for key in replay_buffer.non_tensor_batch.keys():
+                        batch.non_tensor_batch[key] = replay_buffer.non_tensor_batch[key][selected]
+
                     # compute global_valid tokens
                     batch.meta_info['global_token_num'] = torch.sum(batch.batch['attention_mask'], dim=-1).tolist()
+                    batch.meta_info['alpha'] = alpha
 
                     if self.use_reference_policy:
                         # compute reference log_prob
@@ -672,8 +706,11 @@ class RayExploreTrainer(object):
 
                 # TODO: make a canonical logger that supports various backend
                 logger.log(data=metrics, step=self.global_steps)
+                logger.log(data={'critic/alpha': alpha}, step=self.global_steps)
 
+                # update global_steps and alpha
                 self.global_steps += 1
+                alpha = self.alpha * (self.global_steps ** self.alpha_decay_coef)
 
                 if self.global_steps >= self.total_training_steps:
 
@@ -682,4 +719,9 @@ class RayExploreTrainer(object):
                         val_metrics = self._validate()
                         pprint(f'Final validation metrics: {val_metrics}')
                         logger.log(data=val_metrics, step=self.global_steps)
+
+                    # make sure wandb finishes logging
+                    if 'wandb' in self.config.trainer.logger:
+                        logger.logger['wandb'].finish()
+
                     return

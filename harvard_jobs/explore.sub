@@ -1,7 +1,7 @@
 #!/bin/bash
-#SBATCH --job-name=explore     # create a short name for your job
+#SBATCH --job-name=explore_1     # create a short name for your job
 #SBATCH -c 96                # Number of cores (-c)
-#SBATCH -t 24:00:00          # Runtime in D-HH:MM, minimum of 10 minutes
+#SBATCH -t 72:00:00          # Runtime in D-HH:MM, minimum of 10 minutes
 #SBATCH --mem=960000           # Memory pool for all cores (see also --mem-per-cpu)
 #SBATCH --mail-type=begin        # send email when job begins
 #SBATCH --mail-type=end          # send email when job ends
@@ -26,32 +26,263 @@ export HF_HOME='/n/holylabs/LABS/kdbrantley_lab/Lab/zhaolin'
 
 GPUS_PER_NODE=4
 MINI_BATCH_SIZE=128 # number of prompts for each update; each batch we do BATCH_SIZE / MINI_BATCH_SIZE updates
-MICRO_BATCH_SIZEPER_DEVICE=1 # reduce to reduce memory but slower
+MICRO_BATCH_SIZEPER_DEVICE=2 # reduce to reduce memory but slower
 MODEL_SIZE="1.5"
 
 MAX_PROMPT_LENGTH=256
 MAX_RESPONSE_LENGTH=1024
 DATASET="gsm8k"
-EPOCH=1
-
-######################
-### Set Slurm Job
-######################
-export VLLM_ATTENTION_BACKEND=XFORMERS
-
-CONSERVATIVE="False"
 
 entropy_coeffs=(0)
 batch_sizes=(512)
 lrs=(1e-6)
 kl_coef=(0)
 
-# ablate without g
-betas=(1e-6 1e-5 1e-4 1e-3)
+######################
+### Set Slurm Job
+######################
+export VLLM_ATTENTION_BACKEND=XFORMERS
+
+# # conservative update limit
+# CONSERVATIVE="True"
+# EPOCH=12
+# REPLAY_SIZE=100000
+# CRITIC_WARMUP=0
+# betas=(1e-2)
+# alphas=(1)
+# alpha_decay_coefs=(0)
+# loss_types=("without_g")
+# normalize_logprobs=("False")
+# normalize_gs=("False")
+# replay_weights=(0)
+
+# for loss_type in "${loss_types[@]}"; do
+#     for normalize_logprob in "${normalize_logprobs[@]}"; do
+#         for normalize_g in "${normalize_gs[@]}"; do
+#             for entropy_coeff in "${entropy_coeffs[@]}"; do
+#                 for kl in "${kl_coef[@]}"; do
+#                     for beta in "${betas[@]}"; do
+#                         for alpha in "${alphas[@]}"; do
+#                             for alpha_decay_coef in "${alpha_decay_coefs[@]}"; do
+#                                 for lr in "${lrs[@]}"; do
+#                                     for bs in "${batch_sizes[@]}"; do
+#                                         for rw in "${replay_weights[@]}"; do
+#                                             python3 -m verl.trainer.main_explore \
+#                                                         algorithm.loss_type=${loss_type} \
+#                                                         algorithm.normalize_logprob=${normalize_logprob} \
+#                                                         algorithm.normalize_g=${normalize_g} \
+#                                                         algorithm.conservative=${CONSERVATIVE} \
+#                                                         algorithm.beta=${beta} \
+#                                                         algorithm.alpha=${alpha} \
+#                                                         algorithm.alpha_decay_coef=${alpha_decay_coef} \
+#                                                         algorithm.replay_weight=${rw} \
+#                                                         algorithm.replay_size=${REPLAY_SIZE} \
+#                                                         data.train_files=/n/holylabs/LABS/kdbrantley_lab/Lab/zhaolin/reasoning/data/${DATASET}/train.parquet \
+#                                                         data.val_files=/n/holylabs/LABS/kdbrantley_lab/Lab/zhaolin/reasoning/data/${DATASET}/test.parquet \
+#                                                         data.max_prompt_length=$MAX_PROMPT_LENGTH \
+#                                                         data.max_response_length=$MAX_RESPONSE_LENGTH \
+#                                                         data.train_batch_size=${bs} \
+#                                                         data.val_batch_size=500 \
+#                                                         actor_rollout_ref.model.path=Qwen/Qwen2.5-${MODEL_SIZE}B \
+#                                                         actor_rollout_ref.actor.optim.lr=$lr \
+#                                                         actor_rollout_ref.actor.ppo_mini_batch_size=$MINI_BATCH_SIZE \
+#                                                         actor_rollout_ref.actor.ppo_micro_batch_size=$(expr $GPUS_PER_NODE \* $MICRO_BATCH_SIZEPER_DEVICE) \
+#                                                         actor_rollout_ref.actor.entropy_coeff=${entropy_coeff} \
+#                                                         actor_rollout_ref.rollout.log_prob_micro_batch_size=$(expr $GPUS_PER_NODE \* $MICRO_BATCH_SIZEPER_DEVICE) \
+#                                                         actor_rollout_ref.rollout.tensor_model_parallel_size=$GPUS_PER_NODE \
+#                                                         actor_rollout_ref.rollout.gpu_memory_utilization=0.4 \
+#                                                         actor_rollout_ref.ref.log_prob_micro_batch_size=$(expr $GPUS_PER_NODE \* $MICRO_BATCH_SIZEPER_DEVICE) \
+#                                                         critic.optim.lr=1e-5 \
+#                                                         critic.model.path=Qwen/Qwen2.5-${MODEL_SIZE}B \
+#                                                         critic.ppo_micro_batch_size=$(expr $GPUS_PER_NODE \* $MICRO_BATCH_SIZEPER_DEVICE) \
+#                                                         algorithm.kl_ctrl.kl_coef=${kl} \
+#                                                         trainer.logger=['wandb'] \
+#                                                         +trainer.val_before_train=False \
+#                                                         trainer.default_hdfs_dir=null \
+#                                                         trainer.critic_warmup=${CRITIC_WARMUP} \
+#                                                         trainer.n_gpus_per_node=$GPUS_PER_NODE \
+#                                                         trainer.nnodes=1 \
+#                                                         trainer.save_freq=-1 \
+#                                                         trainer.test_freq=50 \
+#                                                         trainer.project_name=${DATASET} \
+#                                                         trainer.experiment_name=qwen2.5-${MODEL_SIZE}b-${loss_type}-${normalize_logprob}-${normalize_g}-${CONSERVATIVE}-cw-${CRITIC_WARMUP}-bs-${bs}-ec-${entropy_coeff}-lr-${lr}-kl-${kl}-beta-${beta}-alpha-${alpha}-ad-${alpha_decay_coef}-rw-${rw} \
+#                                                         trainer.total_epochs=${EPOCH} # 2>&1 | tee verl_demo.log
+#                                         done
+#                                     done
+#                                 done
+#                             done
+#                         done
+#                     done
+#                 done
+#             done
+#         done
+#     done
+# done
+
+# # critic warmup difference
+# CONSERVATIVE="False"
+# EPOCH=12
+# REPLAY_SIZE=100000
+# CRITIC_WARMUP=0
+# betas=(1e-4)
+# alphas=(1)
+# alpha_decay_coefs=(0)
+# loss_types=("with_g")
+# normalize_logprobs=("False")
+# normalize_gs=("False")
+# replay_weights=(0)
+
+# for loss_type in "${loss_types[@]}"; do
+#     for normalize_logprob in "${normalize_logprobs[@]}"; do
+#         for normalize_g in "${normalize_gs[@]}"; do
+#             for entropy_coeff in "${entropy_coeffs[@]}"; do
+#                 for kl in "${kl_coef[@]}"; do
+#                     for beta in "${betas[@]}"; do
+#                         for alpha in "${alphas[@]}"; do
+#                             for alpha_decay_coef in "${alpha_decay_coefs[@]}"; do
+#                                 for lr in "${lrs[@]}"; do
+#                                     for bs in "${batch_sizes[@]}"; do
+#                                         for rw in "${replay_weights[@]}"; do
+#                                             python3 -m verl.trainer.main_explore \
+#                                                         algorithm.loss_type=${loss_type} \
+#                                                         algorithm.normalize_logprob=${normalize_logprob} \
+#                                                         algorithm.normalize_g=${normalize_g} \
+#                                                         algorithm.conservative=${CONSERVATIVE} \
+#                                                         algorithm.beta=${beta} \
+#                                                         algorithm.alpha=${alpha} \
+#                                                         algorithm.alpha_decay_coef=${alpha_decay_coef} \
+#                                                         algorithm.replay_weight=${rw} \
+#                                                         algorithm.replay_size=${REPLAY_SIZE} \
+#                                                         data.train_files=/n/holylabs/LABS/kdbrantley_lab/Lab/zhaolin/reasoning/data/${DATASET}/train.parquet \
+#                                                         data.val_files=/n/holylabs/LABS/kdbrantley_lab/Lab/zhaolin/reasoning/data/${DATASET}/test.parquet \
+#                                                         data.max_prompt_length=$MAX_PROMPT_LENGTH \
+#                                                         data.max_response_length=$MAX_RESPONSE_LENGTH \
+#                                                         data.train_batch_size=${bs} \
+#                                                         data.val_batch_size=500 \
+#                                                         actor_rollout_ref.model.path=Qwen/Qwen2.5-${MODEL_SIZE}B \
+#                                                         actor_rollout_ref.actor.optim.lr=$lr \
+#                                                         actor_rollout_ref.actor.ppo_mini_batch_size=$MINI_BATCH_SIZE \
+#                                                         actor_rollout_ref.actor.ppo_micro_batch_size=$(expr $GPUS_PER_NODE \* $MICRO_BATCH_SIZEPER_DEVICE) \
+#                                                         actor_rollout_ref.actor.entropy_coeff=${entropy_coeff} \
+#                                                         actor_rollout_ref.rollout.log_prob_micro_batch_size=$(expr $GPUS_PER_NODE \* $MICRO_BATCH_SIZEPER_DEVICE) \
+#                                                         actor_rollout_ref.rollout.tensor_model_parallel_size=$GPUS_PER_NODE \
+#                                                         actor_rollout_ref.rollout.gpu_memory_utilization=0.4 \
+#                                                         actor_rollout_ref.ref.log_prob_micro_batch_size=$(expr $GPUS_PER_NODE \* $MICRO_BATCH_SIZEPER_DEVICE) \
+#                                                         critic.optim.lr=1e-5 \
+#                                                         critic.model.path=Qwen/Qwen2.5-${MODEL_SIZE}B \
+#                                                         critic.ppo_micro_batch_size=$(expr $GPUS_PER_NODE \* $MICRO_BATCH_SIZEPER_DEVICE) \
+#                                                         algorithm.kl_ctrl.kl_coef=${kl} \
+#                                                         trainer.logger=['wandb'] \
+#                                                         +trainer.val_before_train=False \
+#                                                         trainer.default_hdfs_dir=null \
+#                                                         trainer.critic_warmup=${CRITIC_WARMUP} \
+#                                                         trainer.n_gpus_per_node=$GPUS_PER_NODE \
+#                                                         trainer.nnodes=1 \
+#                                                         trainer.save_freq=-1 \
+#                                                         trainer.test_freq=50 \
+#                                                         trainer.project_name=${DATASET} \
+#                                                         trainer.experiment_name=qwen2.5-${MODEL_SIZE}b-${loss_type}-${normalize_logprob}-${normalize_g}-${CONSERVATIVE}-cw-${CRITIC_WARMUP}-bs-${bs}-ec-${entropy_coeff}-lr-${lr}-kl-${kl}-beta-${beta}-alpha-${alpha}-ad-${alpha_decay_coef}-rw-${rw} \
+#                                                         trainer.total_epochs=${EPOCH} # 2>&1 | tee verl_demo.log
+#                                         done
+#                                     done
+#                                 done
+#                             done
+#                         done
+#                     done
+#                 done
+#             done
+#         done
+#     done
+# done
+
+# # critic warmup difference
+# CONSERVATIVE="False"
+# EPOCH=12
+# REPLAY_SIZE=100000
+# CRITIC_WARMUP=6
+# betas=(1e-4)
+# alphas=(1)
+# alpha_decay_coefs=(0)
+# loss_types=("with_g")
+# normalize_logprobs=("False")
+# normalize_gs=("False")
+# replay_weights=(0)
+
+# for loss_type in "${loss_types[@]}"; do
+#     for normalize_logprob in "${normalize_logprobs[@]}"; do
+#         for normalize_g in "${normalize_gs[@]}"; do
+#             for entropy_coeff in "${entropy_coeffs[@]}"; do
+#                 for kl in "${kl_coef[@]}"; do
+#                     for beta in "${betas[@]}"; do
+#                         for alpha in "${alphas[@]}"; do
+#                             for alpha_decay_coef in "${alpha_decay_coefs[@]}"; do
+#                                 for lr in "${lrs[@]}"; do
+#                                     for bs in "${batch_sizes[@]}"; do
+#                                         for rw in "${replay_weights[@]}"; do
+#                                             python3 -m verl.trainer.main_explore \
+#                                                         algorithm.loss_type=${loss_type} \
+#                                                         algorithm.normalize_logprob=${normalize_logprob} \
+#                                                         algorithm.normalize_g=${normalize_g} \
+#                                                         algorithm.conservative=${CONSERVATIVE} \
+#                                                         algorithm.beta=${beta} \
+#                                                         algorithm.alpha=${alpha} \
+#                                                         algorithm.alpha_decay_coef=${alpha_decay_coef} \
+#                                                         algorithm.replay_weight=${rw} \
+#                                                         algorithm.replay_size=${REPLAY_SIZE} \
+#                                                         data.train_files=/n/holylabs/LABS/kdbrantley_lab/Lab/zhaolin/reasoning/data/${DATASET}/train.parquet \
+#                                                         data.val_files=/n/holylabs/LABS/kdbrantley_lab/Lab/zhaolin/reasoning/data/${DATASET}/test.parquet \
+#                                                         data.max_prompt_length=$MAX_PROMPT_LENGTH \
+#                                                         data.max_response_length=$MAX_RESPONSE_LENGTH \
+#                                                         data.train_batch_size=${bs} \
+#                                                         data.val_batch_size=500 \
+#                                                         actor_rollout_ref.model.path=Qwen/Qwen2.5-${MODEL_SIZE}B \
+#                                                         actor_rollout_ref.actor.optim.lr=$lr \
+#                                                         actor_rollout_ref.actor.ppo_mini_batch_size=$MINI_BATCH_SIZE \
+#                                                         actor_rollout_ref.actor.ppo_micro_batch_size=$(expr $GPUS_PER_NODE \* $MICRO_BATCH_SIZEPER_DEVICE) \
+#                                                         actor_rollout_ref.actor.entropy_coeff=${entropy_coeff} \
+#                                                         actor_rollout_ref.rollout.log_prob_micro_batch_size=$(expr $GPUS_PER_NODE \* $MICRO_BATCH_SIZEPER_DEVICE) \
+#                                                         actor_rollout_ref.rollout.tensor_model_parallel_size=$GPUS_PER_NODE \
+#                                                         actor_rollout_ref.rollout.gpu_memory_utilization=0.4 \
+#                                                         actor_rollout_ref.ref.log_prob_micro_batch_size=$(expr $GPUS_PER_NODE \* $MICRO_BATCH_SIZEPER_DEVICE) \
+#                                                         critic.optim.lr=1e-5 \
+#                                                         critic.model.path=Qwen/Qwen2.5-${MODEL_SIZE}B \
+#                                                         critic.ppo_micro_batch_size=$(expr $GPUS_PER_NODE \* $MICRO_BATCH_SIZEPER_DEVICE) \
+#                                                         algorithm.kl_ctrl.kl_coef=${kl} \
+#                                                         trainer.logger=['wandb'] \
+#                                                         +trainer.val_before_train=False \
+#                                                         trainer.default_hdfs_dir=null \
+#                                                         trainer.critic_warmup=${CRITIC_WARMUP} \
+#                                                         trainer.n_gpus_per_node=$GPUS_PER_NODE \
+#                                                         trainer.nnodes=1 \
+#                                                         trainer.save_freq=-1 \
+#                                                         trainer.test_freq=50 \
+#                                                         trainer.project_name=${DATASET} \
+#                                                         trainer.experiment_name=qwen2.5-${MODEL_SIZE}b-${loss_type}-${normalize_logprob}-${normalize_g}-${CONSERVATIVE}-cw-${CRITIC_WARMUP}-bs-${bs}-ec-${entropy_coeff}-lr-${lr}-kl-${kl}-beta-${beta}-alpha-${alpha}-ad-${alpha_decay_coef}-rw-${rw} \
+#                                                         trainer.total_epochs=${EPOCH} # 2>&1 | tee verl_demo.log
+#                                         done
+#                                     done
+#                                 done
+#                             done
+#                         done
+#                     done
+#                 done
+#             done
+#         done
+#     done
+# done
+
+# replay weight vs alpha_decay_coefs trade off
+CONSERVATIVE="False"
+EPOCH=12
+REPLAY_SIZE=100000
+CRITIC_WARMUP=6
+betas=(1e-4)
 alphas=(1)
-loss_types=("without_g")
+alpha_decay_coefs=(0 0.25 0.5 0.75 1)
+loss_types=("with_g")
 normalize_logprobs=("False")
 normalize_gs=("False")
+replay_weights=(0.6 0.8)
 
 for loss_type in "${loss_types[@]}"; do
     for normalize_logprob in "${normalize_logprobs[@]}"; do
@@ -60,44 +291,52 @@ for loss_type in "${loss_types[@]}"; do
                 for kl in "${kl_coef[@]}"; do
                     for beta in "${betas[@]}"; do
                         for alpha in "${alphas[@]}"; do
-                            for lr in "${lrs[@]}"; do
-                                for bs in "${batch_sizes[@]}"; do
-                                    python3 -m verl.trainer.main_explore \
-                                                algorithm.loss_type=${loss_type} \
-                                                algorithm.normalize_logprob=${normalize_logprob} \
-                                                algorithm.normalize_g=${normalize_g} \
-                                                algorithm.conservative=${CONSERVATIVE} \
-                                                algorithm.beta=${beta} \
-                                                algorithm.alpha=${alpha} \
-                                                data.train_files=/n/holylabs/LABS/kdbrantley_lab/Lab/zhaolin/reasoning/data/${DATASET}/train.parquet \
-                                                data.val_files=/n/holylabs/LABS/kdbrantley_lab/Lab/zhaolin/reasoning/data/${DATASET}/test.parquet \
-                                                data.max_prompt_length=$MAX_PROMPT_LENGTH \
-                                                data.max_response_length=$MAX_RESPONSE_LENGTH \
-                                                data.train_batch_size=${bs} \
-                                                data.val_batch_size=500 \
-                                                actor_rollout_ref.model.path=Qwen/Qwen2.5-${MODEL_SIZE}B \
-                                                actor_rollout_ref.actor.optim.lr=$lr \
-                                                actor_rollout_ref.actor.ppo_mini_batch_size=$MINI_BATCH_SIZE \
-                                                actor_rollout_ref.actor.ppo_micro_batch_size=$(expr $GPUS_PER_NODE \* $MICRO_BATCH_SIZEPER_DEVICE) \
-                                                actor_rollout_ref.actor.entropy_coeff=${entropy_coeff} \
-                                                actor_rollout_ref.rollout.log_prob_micro_batch_size=$(expr $GPUS_PER_NODE \* $MICRO_BATCH_SIZEPER_DEVICE) \
-                                                actor_rollout_ref.rollout.tensor_model_parallel_size=$GPUS_PER_NODE \
-                                                actor_rollout_ref.rollout.gpu_memory_utilization=0.4 \
-                                                actor_rollout_ref.ref.log_prob_micro_batch_size=$(expr $GPUS_PER_NODE \* $MICRO_BATCH_SIZEPER_DEVICE) \
-                                                critic.optim.lr=1e-5 \
-                                                critic.model.path=Qwen/Qwen2.5-${MODEL_SIZE}B \
-                                                critic.ppo_micro_batch_size=$(expr $GPUS_PER_NODE \* $MICRO_BATCH_SIZEPER_DEVICE) \
-                                                algorithm.kl_ctrl.kl_coef=${kl} \
-                                                trainer.logger=['wandb'] \
-                                                +trainer.val_before_train=False \
-                                                trainer.default_hdfs_dir=null \
-                                                trainer.n_gpus_per_node=$GPUS_PER_NODE \
-                                                trainer.nnodes=1 \
-                                                trainer.save_freq=-1 \
-                                                trainer.test_freq=50 \
-                                                trainer.project_name=${DATASET} \
-                                                trainer.experiment_name=qwen2.5-${MODEL_SIZE}b-${loss_type}-${normalize_logprob}-${normalize_g}-bs-${bs}-ec-${entropy_coeff}-lr-${lr}-kl-${kl}-beta-${beta}-alpha-${alpha} \
-                                                trainer.total_epochs=${EPOCH} # 2>&1 | tee verl_demo.log
+                            for alpha_decay_coef in "${alpha_decay_coefs[@]}"; do
+                                for lr in "${lrs[@]}"; do
+                                    for bs in "${batch_sizes[@]}"; do
+                                        for rw in "${replay_weights[@]}"; do
+                                            python3 -m verl.trainer.main_explore \
+                                                        algorithm.loss_type=${loss_type} \
+                                                        algorithm.normalize_logprob=${normalize_logprob} \
+                                                        algorithm.normalize_g=${normalize_g} \
+                                                        algorithm.conservative=${CONSERVATIVE} \
+                                                        algorithm.beta=${beta} \
+                                                        algorithm.alpha=${alpha} \
+                                                        algorithm.alpha_decay_coef=${alpha_decay_coef} \
+                                                        algorithm.replay_weight=${rw} \
+                                                        algorithm.replay_size=${REPLAY_SIZE} \
+                                                        data.train_files=/n/holylabs/LABS/kdbrantley_lab/Lab/zhaolin/reasoning/data/${DATASET}/train.parquet \
+                                                        data.val_files=/n/holylabs/LABS/kdbrantley_lab/Lab/zhaolin/reasoning/data/${DATASET}/test.parquet \
+                                                        data.max_prompt_length=$MAX_PROMPT_LENGTH \
+                                                        data.max_response_length=$MAX_RESPONSE_LENGTH \
+                                                        data.train_batch_size=${bs} \
+                                                        data.val_batch_size=500 \
+                                                        actor_rollout_ref.model.path=Qwen/Qwen2.5-${MODEL_SIZE}B \
+                                                        actor_rollout_ref.actor.optim.lr=$lr \
+                                                        actor_rollout_ref.actor.ppo_mini_batch_size=$MINI_BATCH_SIZE \
+                                                        actor_rollout_ref.actor.ppo_micro_batch_size=$(expr $GPUS_PER_NODE \* $MICRO_BATCH_SIZEPER_DEVICE) \
+                                                        actor_rollout_ref.actor.entropy_coeff=${entropy_coeff} \
+                                                        actor_rollout_ref.rollout.log_prob_micro_batch_size=$(expr $GPUS_PER_NODE \* $MICRO_BATCH_SIZEPER_DEVICE) \
+                                                        actor_rollout_ref.rollout.tensor_model_parallel_size=$GPUS_PER_NODE \
+                                                        actor_rollout_ref.rollout.gpu_memory_utilization=0.4 \
+                                                        actor_rollout_ref.ref.log_prob_micro_batch_size=$(expr $GPUS_PER_NODE \* $MICRO_BATCH_SIZEPER_DEVICE) \
+                                                        critic.optim.lr=1e-5 \
+                                                        critic.model.path=Qwen/Qwen2.5-${MODEL_SIZE}B \
+                                                        critic.ppo_micro_batch_size=$(expr $GPUS_PER_NODE \* $MICRO_BATCH_SIZEPER_DEVICE) \
+                                                        algorithm.kl_ctrl.kl_coef=${kl} \
+                                                        trainer.logger=['wandb'] \
+                                                        +trainer.val_before_train=False \
+                                                        trainer.default_hdfs_dir=null \
+                                                        trainer.critic_warmup=${CRITIC_WARMUP} \
+                                                        trainer.n_gpus_per_node=$GPUS_PER_NODE \
+                                                        trainer.nnodes=1 \
+                                                        trainer.save_freq=-1 \
+                                                        trainer.test_freq=50 \
+                                                        trainer.project_name=${DATASET} \
+                                                        trainer.experiment_name=qwen2.5-${MODEL_SIZE}b-${loss_type}-${normalize_logprob}-${normalize_g}-${CONSERVATIVE}-cw-${CRITIC_WARMUP}-bs-${bs}-ec-${entropy_coeff}-lr-${lr}-kl-${kl}-beta-${beta}-alpha-${alpha}-ad-${alpha_decay_coef}-rw-${rw} \
+                                                        trainer.total_epochs=${EPOCH} # 2>&1 | tee verl_demo.log
+                                        done
+                                    done
                                 done
                             done
                         done
@@ -108,64 +347,41 @@ for loss_type in "${loss_types[@]}"; do
     done
 done
 
-# ablate with g
-betas=(1e-2)
-alphas=(0.01 0.03 0.1 0.3)
-loss_types=("with_g")
-normalize_logprobs=("True")
-normalize_gs=("False")
-
-for loss_type in "${loss_types[@]}"; do
-    for normalize_logprob in "${normalize_logprobs[@]}"; do
-        for normalize_g in "${normalize_gs[@]}"; do
-            for entropy_coeff in "${entropy_coeffs[@]}"; do
-                for kl in "${kl_coef[@]}"; do
-                    for beta in "${betas[@]}"; do
-                        for alpha in "${alphas[@]}"; do
-                            for lr in "${lrs[@]}"; do
-                                for bs in "${batch_sizes[@]}"; do
-                                    python3 -m verl.trainer.main_explore \
-                                                algorithm.loss_type=${loss_type} \
-                                                algorithm.normalize_logprob=${normalize_logprob} \
-                                                algorithm.normalize_g=${normalize_g} \
-                                                algorithm.conservative=${CONSERVATIVE} \
-                                                algorithm.beta=${beta} \
-                                                algorithm.alpha=${alpha} \
-                                                data.train_files=/n/holylabs/LABS/kdbrantley_lab/Lab/zhaolin/reasoning/data/${DATASET}/train.parquet \
-                                                data.val_files=/n/holylabs/LABS/kdbrantley_lab/Lab/zhaolin/reasoning/data/${DATASET}/test.parquet \
-                                                data.max_prompt_length=$MAX_PROMPT_LENGTH \
-                                                data.max_response_length=$MAX_RESPONSE_LENGTH \
-                                                data.train_batch_size=${bs} \
-                                                data.val_batch_size=500 \
-                                                actor_rollout_ref.model.path=Qwen/Qwen2.5-${MODEL_SIZE}B \
-                                                actor_rollout_ref.actor.optim.lr=$lr \
-                                                actor_rollout_ref.actor.ppo_mini_batch_size=$MINI_BATCH_SIZE \
-                                                actor_rollout_ref.actor.ppo_micro_batch_size=$(expr $GPUS_PER_NODE \* $MICRO_BATCH_SIZEPER_DEVICE) \
-                                                actor_rollout_ref.actor.entropy_coeff=${entropy_coeff} \
-                                                actor_rollout_ref.rollout.log_prob_micro_batch_size=$(expr $GPUS_PER_NODE \* $MICRO_BATCH_SIZEPER_DEVICE) \
-                                                actor_rollout_ref.rollout.tensor_model_parallel_size=$GPUS_PER_NODE \
-                                                actor_rollout_ref.rollout.gpu_memory_utilization=0.4 \
-                                                actor_rollout_ref.ref.log_prob_micro_batch_size=$(expr $GPUS_PER_NODE \* $MICRO_BATCH_SIZEPER_DEVICE) \
-                                                critic.optim.lr=1e-5 \
-                                                critic.model.path=Qwen/Qwen2.5-${MODEL_SIZE}B \
-                                                critic.ppo_micro_batch_size=$(expr $GPUS_PER_NODE \* $MICRO_BATCH_SIZEPER_DEVICE) \
-                                                algorithm.kl_ctrl.kl_coef=${kl} \
-                                                trainer.logger=['wandb'] \
-                                                +trainer.val_before_train=False \
-                                                trainer.default_hdfs_dir=null \
-                                                trainer.n_gpus_per_node=$GPUS_PER_NODE \
-                                                trainer.nnodes=1 \
-                                                trainer.save_freq=-1 \
-                                                trainer.test_freq=50 \
-                                                trainer.project_name=${DATASET} \
-                                                trainer.experiment_name=qwen2.5-${MODEL_SIZE}b-${loss_type}-${normalize_logprob}-${normalize_g}-bs-${bs}-ec-${entropy_coeff}-lr-${lr}-kl-${kl}-beta-${beta}-alpha-${alpha} \
-                                                trainer.total_epochs=${EPOCH} # 2>&1 | tee verl_demo.log
-                                done
-                            done
-                        done
-                    done
-                done
-            done
-        done
-    done
-done
+# python3 -m verl.trainer.main_explore \
+#         algorithm.loss_type=with_g \
+#         algorithm.normalize_logprob=False \
+#         algorithm.normalize_g=False \
+#         algorithm.conservative=False \
+#         algorithm.beta=1e-4 \
+#         algorithm.alpha=1 \
+#         algorithm.replay_weight=0 \
+#         algorithm.replay_size=1024 \
+#         data.train_files=/n/holylabs/LABS/kdbrantley_lab/Lab/zhaolin/reasoning/data/gsm8k/train.parquet \
+#         data.val_files=/n/holylabs/LABS/kdbrantley_lab/Lab/zhaolin/reasoning/data/gsm8k/test.parquet \
+#         data.max_prompt_length=256 \
+#         data.max_response_length=1024 \
+#         data.train_batch_size=512 \
+#         data.val_batch_size=500 \
+#         actor_rollout_ref.model.path=Qwen/Qwen2.5-1.5B \
+#         actor_rollout_ref.actor.optim.lr=1e-6 \
+#         actor_rollout_ref.actor.ppo_mini_batch_size=128 \
+#         actor_rollout_ref.actor.ppo_micro_batch_size=8 \
+#         actor_rollout_ref.actor.entropy_coeff=0 \
+#         actor_rollout_ref.rollout.log_prob_micro_batch_size=8 \
+#         actor_rollout_ref.rollout.tensor_model_parallel_size=4 \
+#         actor_rollout_ref.rollout.gpu_memory_utilization=0.4 \
+#         actor_rollout_ref.ref.log_prob_micro_batch_size=8 \
+#         critic.optim.lr=1e-5 \
+#         critic.model.path=Qwen/Qwen2.5-1.5B \
+#         critic.ppo_micro_batch_size=8 \
+#         algorithm.kl_ctrl.kl_coef=0 \
+#         trainer.logger=['wandb'] \
+#         +trainer.val_before_train=False \
+#         trainer.default_hdfs_dir=null \
+#         trainer.n_gpus_per_node=4 \
+#         trainer.nnodes=1 \
+#         trainer.save_freq=-1 \
+#         trainer.test_freq=50 \
+#         trainer.project_name=gsm8k \
+#         trainer.experiment_name=temp \
+#         trainer.total_epochs=1 2>&1 | tee verl_demo.log

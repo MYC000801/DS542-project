@@ -204,6 +204,8 @@ class DataParallelPPOActorExplore(BasePPOActor):
         # make sure we are in training mode
         self.actor_module.train()
 
+        alpha = data.meta_info['alpha']
+
         assert self.config.ppo_mini_batch_size % self.config.ppo_micro_batch_size == 0
         self.gradient_accumulation = self.config.ppo_mini_batch_size // self.config.ppo_micro_batch_size
         temperature = data.meta_info['temperature']  # temperature must be in the data.meta_info to avoid slient error
@@ -257,7 +259,7 @@ class DataParallelPPOActorExplore(BasePPOActor):
                                                                  log_probs=log_prob,
                                                                  response_length=response_length,
                                                                  token_level_rewards=token_level_rewards,
-                                                                 alpha=self.config.alpha,
+                                                                 alpha=alpha,
                                                                  beta=self.config.beta,
                                                                  normalize_logprob=self.config.normalize_logprob,
                                                                  conservative=self.config.conservative,)

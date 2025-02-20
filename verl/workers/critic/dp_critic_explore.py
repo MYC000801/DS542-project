@@ -152,6 +152,8 @@ class DataParallelPPOCriticExplore(BasePPOCritic):
         self.critic_module.train()
         metrics = {}
 
+        alpha = data.meta_info['alpha']
+
         select_keys = ['attention_mask', 'input_ids', 'old_log_probs', 'responses', 'token_level_rewards', 'position_ids']
         batch = data.select(batch_keys=select_keys).batch
         # Split to make minibatch iterator for updating the actor
@@ -186,7 +188,7 @@ class DataParallelPPOCriticExplore(BasePPOCritic):
                                                     old_log_probs=old_log_probs,
                                                     response_length=response_length,
                                                     token_level_rewards=token_level_rewards,
-                                                    alpha=self.config.alpha,
+                                                    alpha=alpha,
                                                     beta=self.config.beta,
                                                     normalize_logprob=self.config.normalize_logprob,)
                 loss = gf_loss / self.gradient_accumulation

@@ -24,7 +24,6 @@ actor_rollout_ref:
     normalize_logprob: ${algorithm.normalize_logprob}
     normalize_g: ${algorithm.normalize_g}
     beta: ${algorithm.beta}
-    alpha: ${algorithm.alpha}
     conservative: ${algorithm.conservative}
     ppo_mini_batch_size: 256
     ppo_micro_batch_size: 64
@@ -127,7 +126,6 @@ critic:
   normalize_logprob: ${algorithm.normalize_logprob}
   normalize_g: ${algorithm.normalize_g}
   beta: ${algorithm.beta}
-  alpha: ${algorithm.alpha}
   conservative: ${algorithm.conservative}
 
 reward_model:
@@ -154,8 +152,11 @@ algorithm:
   normalize_logprob: True
   conservative: True
   normalize_g: True
+  replay_weight: 0.0
+  replay_size: 10000
   beta: 0.01
   alpha: 1
+  alpha_decay_coef: 0
   kl_penalty: kl  # how to estimate kl divergence
   kl_ctrl:
     type: fixed
