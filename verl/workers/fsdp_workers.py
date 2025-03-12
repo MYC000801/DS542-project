@@ -671,6 +671,31 @@ class CriticWorker(Worker):
         torch.cuda.empty_cache()
 
     @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
+    def filter_based_on_value(self, data: DataProto):
+        data = data.to('cuda')
+
+        if self._is_offload_param:
+            load_fsdp_param_and_grad(module=self.critic_module,
+                                     device_id=torch.cuda.current_device(),
+                                     load_grad=self._is_offload_grad)
+        micro_batch_size = self.config.forward_micro_batch_size
+        data.meta_info['micro_batch_size'] = micro_batch_size
+        data.meta_info['max_token_len'] = self.config.forward_max_token_len_per_gpu
+        data.meta_info['use_dynamic_bsz'] = self.config.use_dynamic_bsz
+        # perform forward computation
+        with self.ulysses_sharding_manager:
+            data = self.ulysses_sharding_manager.preprocess_data(data=data)
+            values = self.critic.compute_value_prompt(data=data)
+            output = DataProto.from_dict(tensors={'values': values})
+            output = self.ulysses_sharding_manager.postprocess_data(data=output)
+
+        output = output.to('cpu')
+        if self._is_offload_param:
+            offload_fsdp_param_and_grad(module=self.critic_module, offload_grad=self._is_offload_grad)
+        torch.cuda.empty_cache()
+        return output
+
+    @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
     def compute_values(self, data: DataProto):
         data = data.to('cuda')
 

@@ -367,7 +367,7 @@ class RayPPOTrainer(object):
                                          return_raw_chat=self.config.data.get('return_raw_chat', False),
                                          truncation='error')
         self.train_dataloader = DataLoader(dataset=self.train_dataset,
-                                           batch_size=self.config.data.train_batch_size,
+                                           batch_size=int(self.config.data.train_batch_size * self.config.data.filter_time),
                                            shuffle=True,
                                            drop_last=True,
                                            collate_fn=collate_fn)
@@ -392,7 +392,7 @@ class RayPPOTrainer(object):
         print(f'Size of val dataloader: {len(self.val_dataloader)}')
 
         # inject total_training_steps to actor/critic optim_config. This is hacky.
-        total_training_steps = len(self.train_dataloader) * self.config.trainer.total_epochs
+        total_training_steps = int(len(self.train_dataloader) * self.config.trainer.total_epochs * self.config.data.filter_time)
 
         if self.config.trainer.total_training_steps is not None:
             total_training_steps = self.config.trainer.total_training_steps
@@ -511,11 +511,13 @@ class RayPPOTrainer(object):
 
         # create critic
         if self.config.algorithm.adv_estimator == 'gae':
+            assert self.config.data.filter_time >= 1
             resource_pool = self.resource_pool_manager.get_resource_pool(Role.Critic)
             critic_cls = RayClassWithInitArgs(cls=self.role_worker_mapping[Role.Critic], config=self.config.critic)
             self.resource_pool_to_cls[resource_pool]['critic'] = critic_cls
             self.use_critic = True
         elif self.config.algorithm.adv_estimator == 'grpo':
+            assert self.config.data.filter_time == 1
             self.use_critic = False
         else:
             raise NotImplementedError
@@ -624,7 +626,7 @@ class RayPPOTrainer(object):
         # we start from step 1
         self.global_steps += 1
 
-        for epoch in range(self.config.trainer.total_epochs):
+        for epoch in range(int(self.config.trainer.total_epochs * self.config.data.filter_time)):
             for batch_dict in self.train_dataloader:
                 print(f'epoch {epoch}, step {self.global_steps}')
                 metrics = {}
@@ -632,11 +634,17 @@ class RayPPOTrainer(object):
 
                 batch: DataProto = DataProto.from_single_dict(batch_dict)
 
-                # pop those keys for generation
-                gen_batch = batch.pop(batch_keys=['input_ids', 'attention_mask', 'position_ids'])
-
                 with _timer('step', timing_raw):
+
+                    if self.config.data.filter_time > 1:
+                        old_values = self.critic_wg.filter_based_on_value(batch).batch['values'].squeeze()
+                        selected = torch.argsort(old_values, descending=False)[:self.config.data.train_batch_size]
+                        batch.batch = batch.batch[selected]
+                        for key in batch.non_tensor_batch.keys():
+                            batch.non_tensor_batch[key] = batch.non_tensor_batch[key][selected]
+
                     # generate a batch
+                    gen_batch = batch.pop(batch_keys=['input_ids', 'attention_mask', 'position_ids']) # pop those keys for generation
                     with _timer('gen', timing_raw):
                         gen_batch_output = self.actor_rollout_wg.generate_sequences(gen_batch)
 
