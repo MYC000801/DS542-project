@@ -310,7 +310,7 @@ class RayExploreTrainer(object):
                                          return_raw_chat=self.config.data.get('return_raw_chat', False),
                                          truncation='error')
         self.train_dataloader = DataLoader(dataset=self.train_dataset,
-                                           batch_size=self.config.data.train_batch_size,
+                                           batch_size=int(self.config.data.train_batch_size * self.config.data.filter_time),
                                            shuffle=True,
                                            drop_last=True,
                                            collate_fn=collate_fn)
@@ -335,7 +335,7 @@ class RayExploreTrainer(object):
         print(f'Size of val dataloader: {len(self.val_dataloader)}')
 
         # inject total_training_steps to actor/critic optim_config. This is hacky.
-        total_training_steps = len(self.train_dataloader) * self.config.trainer.total_epochs
+        total_training_steps = int(len(self.train_dataloader) * self.config.trainer.total_epochs * self.config.data.filter_time)
 
         if self.config.trainer.total_training_steps is not None:
             total_training_steps = self.config.trainer.total_training_steps
@@ -455,6 +455,7 @@ class RayExploreTrainer(object):
         # create critic
         if self.config.algorithm.loss_type == 'with_g':
             assert self.config.algorithm.conservative == False
+            assert self.config.data.filter_time >= 1
             resource_pool = self.resource_pool_manager.get_resource_pool(Role.Critic)
             critic_cls = RayClassWithInitArgs(cls=self.role_worker_mapping[Role.Critic], config=self.config.critic)
             self.resource_pool_to_cls[resource_pool]['critic'] = critic_cls
@@ -462,6 +463,7 @@ class RayExploreTrainer(object):
             self.alpha = self.config.algorithm.alpha
             self.alpha_decay_coef = self.config.algorithm.alpha_decay_coef
         elif self.config.algorithm.loss_type == 'without_g':
+            assert self.config.data.filter_time == 1
             self.use_critic = False
             self.alpha = 1
             self.alpha_decay_coef = 0
@@ -576,7 +578,7 @@ class RayExploreTrainer(object):
         alpha = self.alpha * (self.global_steps ** self.alpha_decay_coef)
 
         replay_buffer = None
-        for epoch in range(self.config.trainer.total_epochs):
+        for epoch in range(int(self.config.trainer.total_epochs * self.config.data.filter_time)):
             for batch_dict in self.train_dataloader:
                 print(f'epoch {epoch}, step {self.global_steps}')
                 metrics = {}
@@ -584,11 +586,17 @@ class RayExploreTrainer(object):
 
                 batch: DataProto = DataProto.from_single_dict(batch_dict)
 
-                # pop those keys for generation
-                gen_batch = batch.pop(batch_keys=['input_ids', 'attention_mask', 'position_ids'])
-
                 with _timer('step', timing_raw):
+
+                    if self.config.data.filter_time > 1:
+                        old_values = self.critic_wg.filter_based_on_value(batch).batch['values'].squeeze()
+                        selected = torch.argsort(old_values, descending=False)[:self.config.data.train_batch_size]
+                        batch.batch = batch.batch[selected]
+                        for key in batch.non_tensor_batch.keys():
+                            batch.non_tensor_batch[key] = batch.non_tensor_batch[key][selected]
+
                     # generate a batch
+                    gen_batch = batch.pop(batch_keys=['input_ids', 'attention_mask', 'position_ids']) # pop those keys for generation
                     with _timer('gen', timing_raw):
                         gen_batch_output = self.actor_rollout_wg.generate_sequences(gen_batch)
 
@@ -640,18 +648,6 @@ class RayExploreTrainer(object):
                             ref_log_prob = self.ref_policy_wg.compute_ref_log_prob(batch)
                             batch = batch.union(ref_log_prob)
 
-                    # compute values
-                    if self.use_critic:
-                        with _timer('values', timing_raw):
-                            values = self.critic_wg.compute_values(batch)
-
-                            # nomalize values
-                            if self.config.algorithm.normalize_g:
-                                values = values.batch['values']
-                                values[:, 0] = (values[:, 0] - values[:, 0].mean()) / (values[:, 0].std() + 1e-5)
-                                values = DataProto.from_dict(tensors={'values': values})
-                            batch = batch.union(values)
-
                     with _timer('adv', timing_raw):
                         # compute scores. Support both model and function-based.
                         # We first compute the scores using reward model. Then, we call reward_fn to combine
@@ -683,6 +679,18 @@ class RayExploreTrainer(object):
                             critic_output = self.critic_wg.update_critic(batch)
                         critic_output_metrics = reduce_metrics(critic_output.meta_info['metrics'])
                         metrics.update(critic_output_metrics)
+
+                    # compute values
+                    if self.use_critic:
+                        with _timer('values', timing_raw):
+                            values = self.critic_wg.compute_values(batch)
+
+                            # nomalize values
+                            if self.config.algorithm.normalize_g:
+                                values = values.batch['values']
+                                values[:, 0] = (values[:, 0] - values[:, 0].mean()) / (values[:, 0].std() + 1e-5)
+                                values = DataProto.from_dict(tensors={'values': values})
+                            batch = batch.union(values)
 
                     # implement critic warmup
                     if self.config.trainer.critic_warmup <= self.global_steps:
