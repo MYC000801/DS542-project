@@ -268,7 +268,8 @@ class DataParallelPPOCriticExplore(BasePPOCritic):
                                                     token_level_rewards=token_level_rewards,
                                                     alpha=alpha,
                                                     beta=self.config.beta,
-                                                    normalize_logprob=self.config.normalize_logprob,)
+                                                    normalize_logprob=self.config.normalize_logprob,
+                                                    conservative=self.config.conservative,)
                 loss = gf_loss / self.gradient_accumulation
                 loss.backward()
 

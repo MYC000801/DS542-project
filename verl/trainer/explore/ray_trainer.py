@@ -454,7 +454,6 @@ class RayExploreTrainer(object):
 
         # create critic
         if self.config.algorithm.loss_type == 'with_g':
-            assert self.config.algorithm.conservative == False
             assert self.config.data.filter_time >= 1
             resource_pool = self.resource_pool_manager.get_resource_pool(Role.Critic)
             critic_cls = RayClassWithInitArgs(cls=self.role_worker_mapping[Role.Critic], config=self.config.critic)

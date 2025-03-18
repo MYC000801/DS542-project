@@ -181,7 +181,7 @@ def compute_policy_loss_explore(gvalues, attention_mask, old_log_probs, log_prob
 
     # compute loss
     if conservative:
-        loss = (beta * (log_prob - old_log_prob) - reward)**2
+        loss = (beta * (log_prob - old_log_prob) + g_x - reward)**2
     else:
         loss = (beta * log_prob + g_x - reward)**2
 
@@ -241,7 +241,7 @@ def compute_entropy_loss(logits, eos_mask):
     return entropy_loss
 
 
-def compute_g_loss(gpreds, attention_mask, old_log_probs, response_length, token_level_rewards, alpha, beta, normalize_logprob):
+def compute_g_loss(gpreds, attention_mask, old_log_probs, response_length, token_level_rewards, alpha, beta, normalize_logprob, conservative):
 
     # g_w(x)
     g_x = gpreds[:, 0]
@@ -256,7 +256,10 @@ def compute_g_loss(gpreds, attention_mask, old_log_probs, response_length, token
     reward = (token_level_rewards * response_mask).sum(dim=-1)
 
     # compute loss
-    loss = (beta * log_prob + g_x - reward)**2 - g_x / alpha
+    if conservative:
+        loss = (g_x - reward)**2 - g_x / alpha
+    else:
+        loss = (beta * log_prob + g_x - reward)**2 - g_x / alpha
 
     return loss.mean()
 
