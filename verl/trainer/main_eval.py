@@ -25,10 +25,12 @@ import numpy as np
 
 
 def select_reward_fn(data_source):
-    if data_source == 'lighteval/MATH':
+    if data_source == 'openai/gsm8k':
         return math.compute_score
     else:
         raise NotImplementedError
+
+
 
 
 @hydra.main(config_path='config', config_name='evaluation', version_base=None)

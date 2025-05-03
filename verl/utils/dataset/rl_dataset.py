@@ -23,6 +23,7 @@ import numpy as np
 from torch.utils.data import Dataset, DataLoader
 from transformers import AutoTokenizer, PreTrainedTokenizer
 from verl.utils.fs import copy_local_path_from_hdfs
+from verl.utils.torch_functional import get_eos_mask, pad_sequence_to_length
 
 from verl.utils.model import compute_position_id_with_mask
 import verl.utils.torch_functional as verl_F
@@ -64,7 +65,9 @@ class RLHFDataset(Dataset):
                  parquet_files: Union[str, List[str]],
                  tokenizer: PreTrainedTokenizer,
                  prompt_key='prompt',
+                 use_outside_answer=False,
                  max_prompt_length=1024,
+                 max_answer_length=1024,
                  filter_prompts=True,
                  cache_dir='~/.cache/verl/rlhf',
                  chat_template_func=None,
@@ -76,9 +79,11 @@ class RLHFDataset(Dataset):
         self.parquet_files = parquet_files
         self.cache_dir = os.path.expanduser(cache_dir)
         self.tokenizer = tokenizer
+        self.use_outside_answer = use_outside_answer 
 
         self.prompt_key = prompt_key
         self.max_prompt_length = max_prompt_length
+        self.max_answer_length = max_answer_length
         self.filter_prompts = filter_prompts
 
         self.return_raw_chat = return_raw_chat
@@ -108,9 +113,9 @@ class RLHFDataset(Dataset):
         prompt_key = self.prompt_key
 
         # nvm if prompt is too long
-        # self.dataframe = self.dataframe[self.dataframe.apply(lambda doc: len(
-        #     tokenizer.apply_chat_template(doc[prompt_key], add_generation_prompt=True)) <= self.max_prompt_length,
-        #                                                      axis=1)]
+        self.dataframe = self.dataframe[self.dataframe.apply(lambda doc: len(
+            tokenizer.apply_chat_template(doc[prompt_key], add_generation_prompt=True)) <= self.max_prompt_length,
+                                                            axis=1)]
 
         print(f'filter dataset len: {len(self.dataframe)}')
 
@@ -140,6 +145,46 @@ class RLHFDataset(Dataset):
         row_dict['input_ids'] = input_ids[0]
         row_dict['attention_mask'] = attention_mask[0]
         row_dict['position_ids'] = position_ids[0]
+
+        if self.use_outside_answer:
+            answer = row_dict['reward_model']['answer']
+            # for outside response, always truncate on the right side
+            input_ids_answer, attention_mask_answer = verl_F.tokenize_and_postprocess_data(prompt=answer,
+                                                                            tokenizer=self.tokenizer,
+                                                                            max_length=self.max_answer_length,
+                                                                            pad_token_id=self.tokenizer.pad_token_id,
+                                                                            left_pad=True,
+                                                                            truncation='right')
+
+
+            '''            idx = input_ids[0]  # (bs, prompt_length)
+                        # left-padded attention_mask
+                        attention_mask = attention_mask[0]
+                        position_ids = position_ids[0]
+                        response = input_ids_answer[0]
+                        seq = torch.cat([idx, response], dim=-1)
+
+
+                        
+
+                        # used to construct attention_mask
+                        eos_token_id = self.tokenizer.eos_token_id
+                        batch_size = idx.size(0)
+
+                        response_length = response.size(1)
+                        delta_position_id = torch.arange(1, response_length + 1, device=position_ids.device)
+                        delta_position_id = delta_position_id.unsqueeze(0).repeat(batch_size, 1)
+
+                        response_position_ids = position_ids[:, -1:] + delta_position_id
+                        position_ids = torch.cat([position_ids, response_position_ids], dim=-1)
+                        response_attention_mask = get_eos_mask(response_id=response, eos_token=eos_token_id, dtype=attention_mask.dtype)
+                        attention_mask = torch.cat((attention_mask, response_attention_mask), dim=-1)
+
+            '''
+            position_ids_answer = compute_position_id_with_mask(attention_mask_answer)
+            row_dict['input_ids_answer'] = input_ids_answer[0]
+            row_dict['attention_mask_answer'] = attention_mask_answer[0]
+            row_dict['position_ids_answer'] = position_ids_answer[0]       
 
         # encode prompts without chat template
         if self.return_raw_chat:

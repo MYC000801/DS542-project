@@ -19,12 +19,13 @@ from verl import DataProto
 import torch
 from verl.utils.reward_score import gsm8k, math, multiply, countdown
 from verl.trainer.ppo.ray_trainer import RayPPOTrainer
+import numpy as np
 
 
 def _select_rm_score_fn(data_source):
     if data_source == 'openai/gsm8k':
         return gsm8k.compute_score
-    elif data_source == 'lighteval/MATH':
+    elif data_source == 'DigitalLearningGmbH/MATH-lighteval' or data_source == 'xDAN2099/lighteval-MATH':
         return math.compute_score
     elif "multiply" in data_source or "arithmetic" in data_source:
         return multiply.compute_score
@@ -50,6 +51,7 @@ class RewardManager():
             return data.batch['rm_scores']
 
         reward_tensor = torch.zeros_like(data.batch['responses'], dtype=torch.float32)
+        decode_responses = []
 
         already_print_data_sources = {}
 
@@ -71,6 +73,10 @@ class RewardManager():
             sequences = torch.cat((valid_prompt_ids, valid_response_ids))
             sequences_str = self.tokenizer.decode(sequences)
 
+            # save sequence
+            #data[i].non_tensor_batch['sequences_str'] = sequences_str
+            decode_responses.append(sequences_str)
+
             ground_truth = data_item.non_tensor_batch['reward_model']['ground_truth']
 
             # select rm_score
@@ -87,7 +93,7 @@ class RewardManager():
                 already_print_data_sources[data_source] += 1
                 print(sequences_str)
 
-        return reward_tensor
+        return reward_tensor, np.array(decode_responses, dtype=object)
 
 
 import ray

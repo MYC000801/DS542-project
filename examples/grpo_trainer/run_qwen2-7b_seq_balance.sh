@@ -6,7 +6,7 @@ python3 -m verl.trainer.main_ppo \
     algorithm.adv_estimator=grpo \
     data.train_files=$HOME/data/gsm8k/train.parquet \
     data.val_files=$HOME/data/gsm8k/test.parquet \
-    data.train_batch_size=1024 \
+    data.train_batch_size=512 \
     data.val_batch_size=1312 \
     data.max_prompt_length=512 \
     data.max_response_length=1024 \
@@ -30,7 +30,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     algorithm.kl_ctrl.kl_coef=0.001 \
     trainer.critic_warmup=0 \
-    trainer.logger=['console','wandb'] \
+    trainer.logger=['wandb'] \
     trainer.project_name='verl_grpo_example_gsm8k' \
     trainer.experiment_name='qwen2_7b_function_rm_kl1e-3' \
     +trainer.val_before_train=False \

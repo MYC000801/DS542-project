@@ -346,10 +346,12 @@ class RayPPOTrainer(object):
         self.train_dataset = RLHFDataset(parquet_files=self.config.data.train_files,
                                          tokenizer=self.tokenizer,
                                          prompt_key=self.config.data.prompt_key,
+                                         use_outside_answer=True,
                                          max_prompt_length=self.config.data.max_prompt_length,
+                                         max_answer_length=2048,
                                          filter_prompts=True,
                                          return_raw_chat=self.config.data.get('return_raw_chat', False),
-                                         truncation='error')
+                                         truncation='right')
         self.train_dataloader = DataLoader(dataset=self.train_dataset,
                                            batch_size=self.config.data.train_batch_size,
                                            shuffle=True,
@@ -359,10 +361,12 @@ class RayPPOTrainer(object):
         self.val_dataset = RLHFDataset(parquet_files=self.config.data.val_files,
                                        tokenizer=self.tokenizer,
                                        prompt_key=self.config.data.prompt_key,
+                                       use_outside_answer=True,
                                        max_prompt_length=self.config.data.max_prompt_length,
+                                       max_answer_length=2048,
                                        filter_prompts=True,
                                        return_raw_chat=self.config.data.get('return_raw_chat', False),
-                                       truncation='error')
+                                       truncation='right')
         self.val_dataloader = DataLoader(dataset=self.val_dataset,
                                          batch_size=len(self.val_dataset),
                                          shuffle=True,
@@ -420,7 +424,7 @@ class RayPPOTrainer(object):
 
             # evaluate using reward_function
             # for certain reward function (e.g. sandbox), the generation can overlap with reward
-            reward_tensor = self.val_reward_fn(test_batch)
+            reward_tensor, _ = self.val_reward_fn(test_batch)
 
             reward_tensor_lst.append(reward_tensor)
             data_source_lst.append(test_batch.non_tensor_batch.get('data_source', ['unknown'] * reward_tensor.shape[0]))
@@ -544,6 +548,8 @@ class RayPPOTrainer(object):
                                                     prefix=logging_prefix)
         metrics.update(global_balance_stats)
 
+
+
     def fit(self):
         """
         The training loop of PPO.
@@ -579,9 +585,11 @@ class RayPPOTrainer(object):
                 timing_raw = {}
 
                 batch: DataProto = DataProto.from_single_dict(batch_dict)
+                print(batch.batch.keys())
 
                 # pop those keys for generation
                 gen_batch = batch.pop(batch_keys=['input_ids', 'attention_mask', 'position_ids'])
+                print("prompt:", gen_batch.batch['input_ids'].shape)
 
                 with _timer('step', timing_raw):
                     # generate a batch
@@ -594,6 +602,10 @@ class RayPPOTrainer(object):
                     batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
                     batch = batch.union(gen_batch_output)
 
+                    print("prompt+response:", batch.batch['input_ids'].shape)
+
+                    
+
                     # balance the number of valid tokens on each dp rank.
                     # Note that this breaks the order of data inside the batch.
                     # Please take care when you implement group based adv computation such as GRPO and rloo
@@ -601,6 +613,8 @@ class RayPPOTrainer(object):
 
                     # compute global_valid tokens
                     batch.meta_info['global_token_num'] = torch.sum(batch.batch['attention_mask'], dim=-1).tolist()
+
+                    batch.meta_info['global_step'] = self.global_steps
 
                     if self.use_reference_policy:
                         # compute reference log_prob
@@ -624,8 +638,11 @@ class RayPPOTrainer(object):
                             batch = batch.union(reward_tensor)
 
                         # we combine with rule-based rm
-                        reward_tensor = self.reward_fn(batch)
+                        reward_tensor, decode_responses = self.reward_fn(batch)
                         batch.batch['token_level_scores'] = reward_tensor
+                        batch.non_tensor_batch['decode_responses'] = decode_responses
+
+                        #answer = batch.non_tensor_batch['reward_model']['ground_truth']
 
                         # compute rewards. apply_kl_penalty if available
                         if not self.config.actor_rollout_ref.actor.use_kl_loss:
